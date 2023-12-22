@@ -1,2 +1,2 @@
-# Planning-Transformer
-Codebase for the planning-transformer
+# planning-transformer
+Advanced Project
