@@ -1,20 +1,17 @@
-name: pdt
+name: planning-transformer
 channels:
   - pytorch
 dependencies:
   - anaconda
   - cudatoolkit=10.2.89
   - python=3.10.12
-  - numpy
+  - numpy=1.26.2
   - pip
   - pip:
-    - gym "gym<0.24.0"
+    - gym==0.23.1
     - git+https://github.com/rail-berkeley/d4rl@master#egg=d4rl
     - mujoco==2.2.1
-    - numpy==1.20.3
-    - stable-baselines3==1.1.0
     - tensorboard==2.5.0
     - torch==1.11.0
-    - transformers==4.5.1
     - pyrallis==0.3.1
-    - wandb-0.16.0
+    - wandb==0.16.0
