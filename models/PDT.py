@@ -2,9 +2,12 @@
 Modified version of the single file implementation of Decision transformer as provided by the CORL team
 """
 
+import io
 import warnings
+from concurrent.futures import ProcessPoolExecutor
+from tqdm import tqdm
 
-import torch
+import matplotlib.pyplot as plt
 
 warnings.filterwarnings('ignore')
 warnings.filterwarnings('ignore', category=DeprecationWarning, module='numpy.*')
@@ -20,6 +23,7 @@ os.environ["WANDB_SILENT"] = "false"
 import d4rl  # noqa
 from DT import *
 from PTG_single import PlanningTokenGenerator
+from utils import log_attention_maps, log_tensor_as_image
 
 
 @dataclass
@@ -85,11 +89,17 @@ class TrainConfig:
     eval_seed: int = 42
     # training device
     device: str = "cuda"
+    # log attention weights
+    log_attn_weights: bool = False
+    log_attn_every: int = 100
 
     # Add new fields for PTG
     ptg_num_layers: int = 2  # Number of transformer layers for PTG
     ptg_learning_rate: float = 1e-4  # Learning rate for PTG optimizer
     ptg_warmup_steps: int = 5000  # Warmup steps for PTG learning rate scheduler
+
+    # video
+    record_video: bool=False
 
     def __post_init__(self):
         self.name = f"{self.name}-{self.env_name}-{str(uuid.uuid4())[:8]}"
@@ -131,7 +141,8 @@ class PlanningDecisionTransformer(DecisionTransformer):
             ]
         )
 
-    def forward(self, states, actions, returns_to_go, time_steps, planning_token, padding_mask=None):
+    def forward(self, states, actions, returns_to_go, time_steps, planning_token, padding_mask=None,
+                log_attention=False):
         batch_size, seq_len = states.shape[0], states.shape[1]
         # [batch_size, seq_len, emb_dim]
         time_emb = self.timestep_emb(time_steps)
@@ -142,19 +153,18 @@ class PlanningDecisionTransformer(DecisionTransformer):
         # [batch_size, seq_len * 3, emb_dim], (r_0, s_0, a_0, r_1, s_1, a_1, ...)
         sequence = (
             torch.stack([returns_emb, state_emb, act_emb], dim=1)
-                .permute(0, 2, 1, 3)
-                .reshape(batch_size, 3 * seq_len, self.embedding_dim)
+            .permute(0, 2, 1, 3)
+            .reshape(batch_size, 3 * seq_len, self.embedding_dim)
         )
 
         sequence = torch.cat([planning_token, sequence], dim=1)
-
 
         if padding_mask is not None:
             # [batch_size, seq_len * 3], stack mask identically to fit the sequence
             padding_mask = (
                 torch.stack([padding_mask, padding_mask, padding_mask], dim=1)
-                    .permute(0, 2, 1)
-                    .reshape(batch_size, 3 * seq_len)
+                .permute(0, 2, 1)
+                .reshape(batch_size, 3 * seq_len)
             )
             # account for the planning token in the mask
             planning_token_mask = torch.zeros(batch_size, 1, dtype=torch.bool, device=planning_token.device)
@@ -165,22 +175,27 @@ class PlanningDecisionTransformer(DecisionTransformer):
         out = self.emb_norm(sequence)
         out = self.emb_drop(out)
 
+        # for some interpretability lets get the attention maps
+        attention_maps = []
         for i, block in enumerate(self.blocks):
-            out = block(out, padding_mask=padding_mask)
+            out, attn_weights = block(out, padding_mask=padding_mask, log_attention=log_attention)
+            attention_maps.append(attn_weights)
+
         out = self.out_norm(out)
         # [batch_size, seq_len, action_dim]
         # predict actions only from state embeddings
         out = self.action_head(out[:, (1 + 1)::3]) * self.max_action  # The "+ 1" accounts for the planning token
-        return out
+        return out, attention_maps
+
 
 # Training and evaluation logic
 @torch.no_grad()
 def eval_rollout(
-    pdt_model: PlanningDecisionTransformer,
-    ptg_model: PlanningTokenGenerator,
-    env: gym.Env,
-    target_return: float,
-    device: str = "cpu",
+        pdt_model: PlanningDecisionTransformer,
+        ptg_model: PlanningTokenGenerator,
+        env: gym.Env,
+        target_return: float,
+        device: str = "gpu",
 ) -> Tuple[float, float]:
     states = torch.zeros(
         1, pdt_model.episode_len + 1, pdt_model.state_dim, dtype=torch.float, device=device
@@ -204,12 +219,13 @@ def eval_rollout(
         # first select history up to step, then select last seq_len states,
         # step + 1 as : operator is not inclusive, last action is dummy with zeros
         # (as model will predict last, actual last values are not important)
-        predicted_actions = pdt_model(  # fix this noqa!!!
-            states[:, : step + 1][:, -pdt_model.seq_len :],
-            actions[:, : step + 1][:, -pdt_model.seq_len :],
-            returns[:, : step + 1][:, -pdt_model.seq_len :],
-            time_steps[:, : step + 1][:, -pdt_model.seq_len :],
-            planning_token
+        predicted_actions, _ = pdt_model(  # fix this noqa!!!
+            states[:, : step + 1][:, -pdt_model.seq_len:],
+            actions[:, : step + 1][:, -pdt_model.seq_len:],
+            returns[:, : step + 1][:, -pdt_model.seq_len:],
+            time_steps[:, : step + 1][:, -pdt_model.seq_len:],
+            planning_token,
+            log_attention=False
         )
         predicted_action = predicted_actions[0, -1].cpu().numpy()
         next_state, reward, done, info = env.step(predicted_action)
@@ -226,8 +242,11 @@ def eval_rollout(
 
     return episode_return, episode_len
 
+
 @pyrallis.wrap()
 def train(config: TrainConfig):
+    num_cores = os.sysconf("SC_NPROCESSORS_ONLN")
+
     set_seed(config.train_seed, deterministic_torch=config.deterministic_torch)
     # init wandb session for logging
     wandb_init(asdict(config))
@@ -240,7 +259,7 @@ def train(config: TrainConfig):
         dataset,
         batch_size=config.batch_size,
         pin_memory=True,
-        num_workers=config.num_workers,
+        num_workers=num_cores,
     )
     # evaluation environment with state & reward preprocessing (as in dataset above)
     eval_env = wrap_env(
@@ -248,6 +267,8 @@ def train(config: TrainConfig):
         state_mean=dataset.state_mean,
         state_std=dataset.state_std,
         reward_scale=config.reward_scale,
+        record_video=config.record_video,
+        video_dir=f'../video/{config.env_name}'
     )
     # DT model & optimizer & scheduler setup
     config.state_dim = eval_env.observation_space.shape[0]
@@ -297,7 +318,7 @@ def train(config: TrainConfig):
     print(f"Total parameters (DT): {sum(p.numel() for p in pdt_model.parameters())}")
     trainloader_iter = iter(trainloader)
     for step in trange(config.update_steps, desc="Training"):
-        print(f"step {step} in train loop")
+        # print(f"step {step} in train loop")
         batch = next(trainloader_iter)
         states, actions, returns, time_steps, mask = [b.to(config.device) for b in batch]
         # True value indicates that the corresponding key value will be ignored
@@ -306,16 +327,25 @@ def train(config: TrainConfig):
         # Generate the planning token once at the start
         planning_token = ptg_model(states[:, 0, :])
 
+        # log weights
+        log_weights = config.log_attn_weights and step % config.log_attn_every == 0
+
+        if log_weights:
+            log_tensor_as_image(planning_token[0][0])
+
         # Forward pass through the model with planning token
-        predicted_actions = pdt_model(
+        predicted_actions, attention_maps = pdt_model(
             states=states,
             actions=actions,
             returns_to_go=returns,
             time_steps=time_steps,
             planning_token=planning_token,  # Include planning token in the model's forward pass
             padding_mask=padding_mask,
+            log_attention=log_weights
         )
 
+        if log_weights:
+            log_attention_maps(attention_maps)
 
         main_loss = F.mse_loss(predicted_actions, actions.detach(), reduction="none")
         main_loss = (main_loss * mask.unsqueeze(-1)).mean()
@@ -335,7 +365,7 @@ def train(config: TrainConfig):
         #     if 'state_emb' in name and param.grad is not None:
         #         wandb.log({f"gradients_after/{name}": wandb.Histogram(param.grad.cpu().data.numpy())})
 
-        print("train_loss", main_loss.item())
+        # print("train_loss", main_loss.item())
         wandb.log(
             {
                 "train_loss": main_loss.item(),
@@ -345,7 +375,7 @@ def train(config: TrainConfig):
         )
 
         # validation in the env for the actual online performance
-        if step % config.eval_every == 0 or step == config.update_steps - 1:
+        if (step % config.eval_every == 0 and step != 0) or step == config.update_steps - 1:
             pdt_model.eval()
             ptg_model.eval()
             for target_return in config.target_returns:
@@ -382,13 +412,14 @@ def train(config: TrainConfig):
             pdt_model.train()
             ptg_model.train()
 
-    if config.checkpoints_path is not None:
-        checkpoint = {
-            "model_state": pdt_model.state_dict(),
-            "state_mean": dataset.state_mean,
-            "state_std": dataset.state_std,
-        }
-        torch.save(checkpoint, os.path.join(config.checkpoints_path, "dt_checkpoint.pt"))
+        if config.checkpoints_path is not None:
+            checkpoint = {
+                "pdt_model_state": pdt_model.state_dict(),
+                "ptg_model_state": ptg_model.state_dict(),
+                "state_mean": dataset.state_mean,
+                "state_std": dataset.state_std,
+            }
+            torch.save(checkpoint, os.path.join(config.checkpoints_path, "pdt_checkpoint.pt"))
 
 
 if __name__ == "__main__":
