@@ -16,6 +16,9 @@ Codebase for the Planning-Transformer advanced project.
 If using cuda run the following :
  1. pip3 install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
 
+TO render videos properly you'll need ffmpeg installed with x264 support which can be be done by running:
+conda install x264=='1!152.20180717' ffmpeg=4.0.2 -c conda-forgey
+
 ## Usage instructions
 
 1. To test the Planning-Transformer on the AntMaze environment run: 

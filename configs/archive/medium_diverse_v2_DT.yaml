@@ -3,11 +3,11 @@ batch_size: 64
 betas:
 - 0.9
 - 0.999
-checkpoints_path: "./checkpoints/medium_diverse/PDT"
+checkpoints_path: "./checkpoints/medium_diverse/DT"
 clip_grad: 0.25
 deterministic_torch: false
 device: cuda
-embedding_dim: 128
+embedding_dim: 64
 embedding_dropout: 0.1
 env_name: "antmaze-medium-diverse-v2"
 episode_len: 1000
@@ -17,7 +17,7 @@ eval_seed: 42
 group: "dt-antmaze-medium-diverse-v2-multiseed-v0"
 learning_rate: 0.0001
 max_action: 1.0
-name: "PDT"
+name: "DT"
 num_heads: 1
 num_layers: 3
 num_workers: 4
@@ -33,4 +33,3 @@ weight_decay: 0.0001
 log_attn_weights: 1
 log_attn_every: 250
 record_video: 1
-use_planning_token: 1

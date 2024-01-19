@@ -9,8 +9,8 @@ from tqdm import tqdm
 
 import matplotlib.pyplot as plt
 
-warnings.filterwarnings('ignore')
-warnings.filterwarnings('ignore', category=DeprecationWarning, module='numpy.*')
+# warnings.filterwarnings('ignore')
+# warnings.filterwarnings('ignore', category=DeprecationWarning, module='numpy.*')
 
 import os
 
@@ -97,6 +97,7 @@ class TrainConfig:
     ptg_num_layers: int = 2  # Number of transformer layers for PTG
     ptg_learning_rate: float = 1e-4  # Learning rate for PTG optimizer
     ptg_warmup_steps: int = 5000  # Warmup steps for PTG learning rate scheduler
+    use_planning_token: bool = True
 
     # video
     record_video: bool=False
@@ -263,12 +264,12 @@ def train(config: TrainConfig):
     )
     # evaluation environment with state & reward preprocessing (as in dataset above)
     eval_env = wrap_env(
-        env=gym.make(config.env_name),
+        env=gym.make(config.env_name, render_mode="rgb_array"),
         state_mean=dataset.state_mean,
         state_std=dataset.state_std,
         reward_scale=config.reward_scale,
         record_video=config.record_video,
-        video_dir=f'../video/{config.env_name}'
+        video_dir=f'./video/{config.env_name}'
     )
     # DT model & optimizer & scheduler setup
     config.state_dim = eval_env.observation_space.shape[0]

@@ -22,7 +22,6 @@ from tqdm.auto import trange
 
 import wandb
 from utils import log_attention_maps
-from gym.wrappers import RecordVideo
 
 
 @dataclass
@@ -139,14 +138,15 @@ def wrap_env(
         state_std: Union[np.ndarray, float] = 1.0,
         reward_scale: float = 1.0,
         record_video: bool = False,
-        video_dir: str = '../video/'
+        video_dir: str = './video/'
 ) -> gym.Env:
     env = gym.wrappers.TransformObservation(env, partial(normalize_state, state_mean=state_mean, state_std=state_std))
     if reward_scale != 1.0:
         env = gym.wrappers.TransformReward(env, partial(scale_reward, reward_scale=reward_scale))
 
     if record_video:
-        env = RecordVideo(env, video_folder=video_dir, episode_trigger=lambda eps_id: eps_id<10)
+        env.metadata['render_modes'].append("rgb_array")
+        env = gym.wrappers.RecordVideo(env, video_folder=video_dir, episode_trigger=lambda eps_id: eps_id<3)
     return env
 
 
@@ -472,12 +472,12 @@ def train(config: TrainConfig):
     )
     # evaluation environment with state & reward preprocessing (as in dataset above)
     eval_env = wrap_env(
-        env=gym.make(config.env_name),
+        env=gym.make(config.env_name, render_mode="rgb_array"),
         state_mean=dataset.state_mean,
         state_std=dataset.state_std,
         reward_scale=config.reward_scale,
         record_video=config.record_video,
-        video_dir=f'../video/{config.env_name}'
+        video_dir=f'./video/{config.env_name}'
     )
     # model & optimizer & scheduler setup
     config.state_dim = eval_env.observation_space.shape[0]
