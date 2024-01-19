@@ -118,6 +118,7 @@ class PlanningDecisionTransformer(DecisionTransformer):
                  num_heads: int = 8,
                  attention_dropout: float = 0.0,
                  residual_dropout: float = 0.0,
+                 use_planning_token: bool = True,
                  **kwargs
                  ):
         super().__init__(state_dim, action_dim,
@@ -132,7 +133,7 @@ class PlanningDecisionTransformer(DecisionTransformer):
         self.blocks = nn.ModuleList(
             [
                 TransformerBlock(
-                    seq_len=3 * seq_len + 1,  # Adjusted for the planning token
+                    seq_len=3 * seq_len + use_planning_token,  # Adjusted for the planning token
                     embedding_dim=embedding_dim,
                     num_heads=num_heads,
                     attention_dropout=attention_dropout,
@@ -141,6 +142,7 @@ class PlanningDecisionTransformer(DecisionTransformer):
                 for _ in range(num_layers)
             ]
         )
+        self.use_planning_token = use_planning_token
 
     def forward(self, states, actions, returns_to_go, time_steps, planning_token, padding_mask=None,
                 log_attention=False):
@@ -158,7 +160,8 @@ class PlanningDecisionTransformer(DecisionTransformer):
             .reshape(batch_size, 3 * seq_len, self.embedding_dim)
         )
 
-        sequence = torch.cat([planning_token, sequence], dim=1)
+        if self.use_planning_token:
+            sequence = torch.cat([planning_token, sequence], dim=1)
 
         if padding_mask is not None:
             # [batch_size, seq_len * 3], stack mask identically to fit the sequence
@@ -167,9 +170,10 @@ class PlanningDecisionTransformer(DecisionTransformer):
                 .permute(0, 2, 1)
                 .reshape(batch_size, 3 * seq_len)
             )
-            # account for the planning token in the mask
-            planning_token_mask = torch.zeros(batch_size, 1, dtype=torch.bool, device=planning_token.device)
-            padding_mask = torch.cat([planning_token_mask, padding_mask], dim=1)
+            if self.use_planning_token:
+                # account for the planning token in the mask
+                planning_token_mask = torch.zeros(batch_size, 1, dtype=torch.bool, device=planning_token.device)
+                padding_mask = torch.cat([planning_token_mask, padding_mask], dim=1)
 
         # LayerNorm and Dropout (!!!) as in original implementation,
         # while minGPT & huggingface uses only embedding dropout
@@ -185,7 +189,7 @@ class PlanningDecisionTransformer(DecisionTransformer):
         out = self.out_norm(out)
         # [batch_size, seq_len, action_dim]
         # predict actions only from state embeddings
-        out = self.action_head(out[:, (1 + 1)::3]) * self.max_action  # The "+ 1" accounts for the planning token
+        out = self.action_head(out[:, (1 + self.use_planning_token)::3]) * self.max_action  # The "+ 1" accounts for the planning token
         return out, attention_maps
 
 
@@ -197,6 +201,7 @@ def eval_rollout(
         env: gym.Env,
         target_return: float,
         device: str = "gpu",
+        use_planning_token: bool = True
 ) -> Tuple[float, float]:
     states = torch.zeros(
         1, pdt_model.episode_len + 1, pdt_model.state_dim, dtype=torch.float, device=device
@@ -212,7 +217,7 @@ def eval_rollout(
     returns[:, 0] = torch.as_tensor(target_return, device=device)
 
     # Generate the planning token once at the start
-    planning_token = ptg_model(states[:, 0, :])
+    planning_token = ptg_model(states[:, 0, :]) if use_planning_token else None
 
     # cannot step higher than model episode len, as timestep embeddings will crash
     episode_return, episode_len = 0.0, 0.0
@@ -300,14 +305,17 @@ def train(config: TrainConfig):
         lambda steps: min((steps + 1) / config.warmup_steps, 1),
     )
 
-    # PTG model & optimizer & scheduler setup
-    ptg_model = PlanningTokenGenerator(
-        state_dim=config.state_dim,
-        planning_token_dim=config.embedding_dim,
-        seq_len=config.seq_len,
-        num_layers=config.ptg_num_layers,
-        state_embedding=pdt_model.state_emb
-    ).to(config.device)
+    if config.use_planning_token:
+        # PTG model & optimizer & scheduler setup
+        ptg_model = PlanningTokenGenerator(
+            state_dim=config.state_dim,
+            planning_token_dim=config.embedding_dim,
+            seq_len=config.seq_len,
+            num_layers=config.ptg_num_layers,
+            state_embedding=pdt_model.state_emb
+        ).to(config.device)
+    else:
+        ptg_model = None
 
     # save config to the checkpoint
     if config.checkpoints_path is not None:
@@ -325,14 +333,14 @@ def train(config: TrainConfig):
         # True value indicates that the corresponding key value will be ignored
         padding_mask = ~mask.to(torch.bool)
 
-        # Generate the planning token once at the start
-        planning_token = ptg_model(states[:, 0, :])
+        planning_token = ptg_model(states[:, 0, :]) if config.use_planning_token else None
 
         # log weights
         log_weights = config.log_attn_weights and step % config.log_attn_every == 0
 
-        if log_weights:
-            log_tensor_as_image(planning_token[0][0])
+        if config.use_planning_token:
+            if log_weights:
+                log_tensor_as_image(planning_token[0][0])
 
         # Forward pass through the model with planning token
         predicted_actions, attention_maps = pdt_model(
@@ -378,7 +386,7 @@ def train(config: TrainConfig):
         # validation in the env for the actual online performance
         if (step % config.eval_every == 0 and step != 0) or step == config.update_steps - 1:
             pdt_model.eval()
-            ptg_model.eval()
+            if config.use_planning_token: ptg_model.eval()
             for target_return in config.target_returns:
                 eval_env.seed(config.eval_seed)
                 eval_returns = []
@@ -411,12 +419,12 @@ def train(config: TrainConfig):
                     step=step,
                 )
             pdt_model.train()
-            ptg_model.train()
+            if config.use_planning_token: ptg_model.train()
 
         if config.checkpoints_path is not None:
             checkpoint = {
                 "pdt_model_state": pdt_model.state_dict(),
-                "ptg_model_state": ptg_model.state_dict(),
+                "ptg_model_state": ptg_model.state_dict() if config.use_planning_token else None,
                 "state_mean": dataset.state_mean,
                 "state_std": dataset.state_std,
             }
