@@ -136,17 +136,11 @@ def wrap_env(
         env: gym.Env,
         state_mean: Union[np.ndarray, float] = 0.0,
         state_std: Union[np.ndarray, float] = 1.0,
-        reward_scale: float = 1.0,
-        record_video: bool = False,
-        video_dir: str = './video/'
+        reward_scale: float = 1.0
 ) -> gym.Env:
     env = gym.wrappers.TransformObservation(env, partial(normalize_state, state_mean=state_mean, state_std=state_std))
     if reward_scale != 1.0:
         env = gym.wrappers.TransformReward(env, partial(scale_reward, reward_scale=reward_scale))
-
-    if record_video:
-        env.metadata['render_modes'].append("rgb_array")
-        env = gym.wrappers.RecordVideo(env, video_folder=video_dir, episode_trigger=lambda eps_id: eps_id<3)
     return env
 
 

@@ -9,8 +9,8 @@ from tqdm import tqdm
 
 import matplotlib.pyplot as plt
 
-# warnings.filterwarnings('ignore')
-# warnings.filterwarnings('ignore', category=DeprecationWarning, module='numpy.*')
+warnings.filterwarnings('ignore')
+warnings.filterwarnings('ignore', category=DeprecationWarning, module='numpy.*')
 
 import os
 
@@ -23,7 +23,7 @@ os.environ["WANDB_SILENT"] = "false"
 import d4rl  # noqa
 from DT import *
 from PTG_single import PlanningTokenGenerator
-from utils import log_attention_maps, log_tensor_as_image
+from utils import log_attention_maps, log_tensor_as_image, arrays_to_video
 
 
 @dataclass
@@ -101,6 +101,7 @@ class TrainConfig:
 
     # video
     record_video: bool=False
+    run_name: str = "run_0"
 
     def __post_init__(self):
         self.name = f"{self.name}-{self.env_name}-{str(uuid.uuid4())[:8]}"
@@ -201,8 +202,9 @@ def eval_rollout(
         env: gym.Env,
         target_return: float,
         device: str = "gpu",
-        use_planning_token: bool = True
-) -> Tuple[float, float]:
+        use_planning_token: bool = True,
+        ep_id = 0
+) -> Tuple[float, float, list, list]:
     states = torch.zeros(
         1, pdt_model.episode_len + 1, pdt_model.state_dim, dtype=torch.float, device=device
     )
@@ -219,19 +221,27 @@ def eval_rollout(
     # Generate the planning token once at the start
     planning_token = ptg_model(states[:, 0, :]) if use_planning_token else None
 
+    if use_planning_token:
+        log_tensor_as_image(planning_token[0][0], f"planning_token_ep_{ep_id}")
+
     # cannot step higher than model episode len, as timestep embeddings will crash
     episode_return, episode_len = 0.0, 0.0
+
+    attention_map_frames = []
+    render_frames = []
     for step in range(pdt_model.episode_len):
+        if ep_id < 3:
+            render_frames.append(env.render(mode="rgb_array"))
         # first select history up to step, then select last seq_len states,
         # step + 1 as : operator is not inclusive, last action is dummy with zeros
         # (as model will predict last, actual last values are not important)
-        predicted_actions, _ = pdt_model(  # fix this noqa!!!
+        predicted_actions, attention_maps = pdt_model(  # fix this noqa!!!
             states[:, : step + 1][:, -pdt_model.seq_len:],
             actions[:, : step + 1][:, -pdt_model.seq_len:],
             returns[:, : step + 1][:, -pdt_model.seq_len:],
             time_steps[:, : step + 1][:, -pdt_model.seq_len:],
             planning_token,
-            log_attention=False
+            log_attention=ep_id < 3
         )
         predicted_action = predicted_actions[0, -1].cpu().numpy()
         next_state, reward, done, info = env.step(predicted_action)
@@ -243,10 +253,12 @@ def eval_rollout(
         episode_return += reward
         episode_len += 1
 
+        if ep_id<3: attention_map_frames.append(log_attention_maps(attention_maps, log_to_wandb=False)[0])
+
         if done:
             break
 
-    return episode_return, episode_len
+    return episode_return, episode_len, attention_map_frames, render_frames
 
 
 @pyrallis.wrap()
@@ -269,12 +281,10 @@ def train(config: TrainConfig):
     )
     # evaluation environment with state & reward preprocessing (as in dataset above)
     eval_env = wrap_env(
-        env=gym.make(config.env_name, render_mode="rgb_array"),
+        env=gym.make(config.env_name),
         state_mean=dataset.state_mean,
         state_std=dataset.state_std,
         reward_scale=config.reward_scale,
-        record_video=config.record_video,
-        video_dir=f'./video/{config.env_name}'
     )
     # DT model & optimizer & scheduler setup
     config.state_dim = eval_env.observation_space.shape[0]
@@ -291,6 +301,7 @@ def train(config: TrainConfig):
         residual_dropout=config.residual_dropout,
         embedding_dropout=config.embedding_dropout,
         max_action=config.max_action,
+        use_planning_token=config.use_planning_token
     ).to(config.device)
 
     optim = torch.optim.AdamW(
@@ -335,13 +346,6 @@ def train(config: TrainConfig):
 
         planning_token = ptg_model(states[:, 0, :]) if config.use_planning_token else None
 
-        # log weights
-        log_weights = config.log_attn_weights and step % config.log_attn_every == 0
-
-        if config.use_planning_token:
-            if log_weights:
-                log_tensor_as_image(planning_token[0][0])
-
         # Forward pass through the model with planning token
         predicted_actions, attention_maps = pdt_model(
             states=states,
@@ -350,11 +354,8 @@ def train(config: TrainConfig):
             time_steps=time_steps,
             planning_token=planning_token,  # Include planning token in the model's forward pass
             padding_mask=padding_mask,
-            log_attention=log_weights
+            log_attention=False
         )
-
-        if log_weights:
-            log_attention_maps(attention_maps)
 
         main_loss = F.mse_loss(predicted_actions, actions.detach(), reduction="none")
         main_loss = (main_loss * mask.unsqueeze(-1)).mean()
@@ -365,7 +366,7 @@ def train(config: TrainConfig):
         main_loss.backward()
         if config.clip_grad is not None:
             torch.nn.utils.clip_grad_norm_(pdt_model.parameters(), config.clip_grad)
-            torch.nn.utils.clip_grad_norm_(ptg_model.parameters(), config.clip_grad)
+            if config.use_planning_token: torch.nn.utils.clip_grad_norm_(ptg_model.parameters(), config.clip_grad)
         optim.step()
         scheduler.step()
         #
@@ -384,20 +385,31 @@ def train(config: TrainConfig):
         )
 
         # validation in the env for the actual online performance
-        if (step % config.eval_every == 0 and step != 0) or step == config.update_steps - 1:
+        #  and step != 0
+        if (step % config.eval_every == 0) or step == config.update_steps - 1:
             pdt_model.eval()
             if config.use_planning_token: ptg_model.eval()
             for target_return in config.target_returns:
                 eval_env.seed(config.eval_seed)
                 eval_returns = []
-                for _ in trange(config.eval_episodes, desc="Evaluation", leave=False):
-                    eval_return, eval_len = eval_rollout(
+                for ep_id in trange(config.eval_episodes, desc="Evaluation", leave=False):
+                    video_folder = f'./video/{"PDT" if config.use_planning_token else "DT"}_' \
+                                            f'{config.env_name}/{config.run_name}/episode-{ep_id}'
+
+                    eval_return, eval_len, attention_frames,render_frames = eval_rollout(
                         pdt_model=pdt_model,
                         ptg_model=ptg_model,
                         env=eval_env,
                         target_return=target_return * config.reward_scale,
                         device=config.device,
+                        use_planning_token=config.use_planning_token,
+                        ep_id=ep_id
                     )
+                    if ep_id < 3:
+                        os.makedirs(video_folder, exist_ok=True)
+                        arrays_to_video(attention_frames, f'{video_folder}/attention_t={step}.mp4', scale_factor=5)
+                        arrays_to_video(render_frames, f'{video_folder}/render_t={step}.mp4', scale_factor=1)
+
                     # unscale for logging & correct normalized score computation
                     eval_returns.append(eval_return / config.reward_scale)
 
