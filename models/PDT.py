@@ -22,7 +22,7 @@ os.environ["WANDB_SILENT"] = "false"
 
 import d4rl  # noqa
 from DT import *
-from PTG_single import PlanningTokenGenerator
+from PTG_mult import PlanningTokenGenerator
 from utils import log_attention_maps, log_tensor_as_image, arrays_to_video
 
 
@@ -94,10 +94,11 @@ class TrainConfig:
     log_attn_every: int = 100
 
     # Add new fields for PTG
-    ptg_num_layers: int = 2  # Number of transformer layers for PTG
-    ptg_learning_rate: float = 1e-4  # Learning rate for PTG optimizer
-    ptg_warmup_steps: int = 5000  # Warmup steps for PTG learning rate scheduler
+    ptg_num_layers: int = 3  # Number of transformer layers for PTG
+    ptg_learning_rate: float = 1e-2  # Learning rate for PTG optimizer
+    ptg_warmup_steps: int = warmup_steps # Warmup steps for PTG learning rate scheduler
     use_planning_token: bool = True
+    num_planning_tokens: int = 5
 
     # video
     record_video: bool=False
@@ -120,6 +121,7 @@ class PlanningDecisionTransformer(DecisionTransformer):
                  attention_dropout: float = 0.0,
                  residual_dropout: float = 0.0,
                  use_planning_token: bool = True,
+                 num_planning_tokens: int = 5,
                  **kwargs
                  ):
         super().__init__(state_dim, action_dim,
@@ -134,7 +136,7 @@ class PlanningDecisionTransformer(DecisionTransformer):
         self.blocks = nn.ModuleList(
             [
                 TransformerBlock(
-                    seq_len=3 * seq_len + use_planning_token,  # Adjusted for the planning token
+                    seq_len=3 * seq_len + use_planning_token*num_planning_tokens,  # Adjusted for the planning token
                     embedding_dim=embedding_dim,
                     num_heads=num_heads,
                     attention_dropout=attention_dropout,
@@ -144,12 +146,14 @@ class PlanningDecisionTransformer(DecisionTransformer):
             ]
         )
         self.use_planning_token = use_planning_token
+        self.num_planning_tokens = num_planning_tokens
 
     def forward(self, states, actions, returns_to_go, time_steps, planning_token, padding_mask=None,
                 log_attention=False):
         batch_size, seq_len = states.shape[0], states.shape[1]
         # [batch_size, seq_len, emb_dim]
         time_emb = self.timestep_emb(time_steps)
+
         state_emb = self.state_emb(states) + time_emb
         act_emb = self.action_emb(actions) + time_emb
         returns_emb = self.return_emb(returns_to_go.unsqueeze(-1)) + time_emb
@@ -173,7 +177,7 @@ class PlanningDecisionTransformer(DecisionTransformer):
             )
             if self.use_planning_token:
                 # account for the planning token in the mask
-                planning_token_mask = torch.zeros(batch_size, 1, dtype=torch.bool, device=planning_token.device)
+                planning_token_mask = torch.zeros(batch_size, self.num_planning_tokens, dtype=torch.bool, device=planning_token.device)
                 padding_mask = torch.cat([planning_token_mask, padding_mask], dim=1)
 
         # LayerNorm and Dropout (!!!) as in original implementation,
@@ -190,7 +194,7 @@ class PlanningDecisionTransformer(DecisionTransformer):
         out = self.out_norm(out)
         # [batch_size, seq_len, action_dim]
         # predict actions only from state embeddings
-        out = self.action_head(out[:, (1 + self.use_planning_token)::3]) * self.max_action  # The "+ 1" accounts for the planning token
+        out = self.action_head(out[:, (1 + self.use_planning_token*self.num_planning_tokens)::3]) * self.max_action  # The "+ 1" accounts for the planning token
         return out, attention_maps
 
 
@@ -222,7 +226,7 @@ def eval_rollout(
     planning_token = ptg_model(states[:, 0, :]) if use_planning_token else None
 
     if use_planning_token:
-        log_tensor_as_image(planning_token[0][0], f"planning_token_ep_{ep_id}")
+        log_tensor_as_image(planning_token[0].view(-1), f"planning_token_ep_{ep_id}")
 
     # cannot step higher than model episode len, as timestep embeddings will crash
     episode_return, episode_len = 0.0, 0.0
@@ -301,7 +305,8 @@ def train(config: TrainConfig):
         residual_dropout=config.residual_dropout,
         embedding_dropout=config.embedding_dropout,
         max_action=config.max_action,
-        use_planning_token=config.use_planning_token
+        use_planning_token=config.use_planning_token,
+        num_planning_tokens=config.num_planning_tokens
     ).to(config.device)
 
     optim = torch.optim.AdamW(
@@ -321,9 +326,8 @@ def train(config: TrainConfig):
         ptg_model = PlanningTokenGenerator(
             state_dim=config.state_dim,
             planning_token_dim=config.embedding_dim,
-            seq_len=config.seq_len,
             num_layers=config.ptg_num_layers,
-            state_embedding=pdt_model.state_emb
+            num_planning_tokens=config.num_planning_tokens,
         ).to(config.device)
     else:
         ptg_model = None

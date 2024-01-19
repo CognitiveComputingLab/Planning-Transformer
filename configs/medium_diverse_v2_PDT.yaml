@@ -34,4 +34,5 @@ log_attn_weights: 1
 log_attn_every: 250
 record_video: 1
 use_planning_token: 1
-run_name: "run_1"
+run_name: "run_7"
+num_planning_tokens: 10
