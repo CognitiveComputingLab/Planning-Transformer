@@ -208,7 +208,7 @@ def eval_rollout(
         device: str = "gpu",
         use_planning_token: bool = True,
         ep_id = 0
-) -> Tuple[float, float, list, list]:
+) -> Tuple[float, float, list, list, list]:
     states = torch.zeros(
         1, pdt_model.episode_len + 1, pdt_model.state_dim, dtype=torch.float, device=device
     )
@@ -222,18 +222,19 @@ def eval_rollout(
     states[:, 0] = torch.as_tensor(env.reset(), device=device)
     returns[:, 0] = torch.as_tensor(target_return, device=device)
 
-    # Generate the planning token once at the start
-    planning_token = ptg_model(states[:, 0, :]) if use_planning_token else None
-
-    if use_planning_token:
-        log_tensor_as_image(planning_token[0].view(-1), f"planning_token_ep_{ep_id}")
-
     # cannot step higher than model episode len, as timestep embeddings will crash
     episode_return, episode_len = 0.0, 0.0
 
     attention_map_frames = []
     render_frames = []
+    pt_frames = []
     for step in range(pdt_model.episode_len):
+        if step % 20 == 0:
+            # Generate the planning token every 20 steps (partial replanning)
+            planning_token = ptg_model(states[:, -1, :]) if use_planning_token else None
+            if use_planning_token:
+                pt_frame = log_tensor_as_image(planning_token[0].view(-1), f"planning_token_ep_{ep_id}", log_to_wandb=False)
+                pt_frames.append(pt_frame)
         if ep_id < 3:
             render_frames.append(env.render(mode="rgb_array"))
         # first select history up to step, then select last seq_len states,
@@ -262,7 +263,7 @@ def eval_rollout(
         if done:
             break
 
-    return episode_return, episode_len, attention_map_frames, render_frames
+    return episode_return, episode_len, attention_map_frames, render_frames, pt_frames
 
 
 @pyrallis.wrap()
@@ -400,7 +401,7 @@ def train(config: TrainConfig):
                     video_folder = f'./video/{"PDT" if config.use_planning_token else "DT"}_' \
                                             f'{config.env_name}/{config.run_name}/episode-{ep_id}'
 
-                    eval_return, eval_len, attention_frames,render_frames = eval_rollout(
+                    eval_return, eval_len, attention_frames,render_frames, pt_frames = eval_rollout(
                         pdt_model=pdt_model,
                         ptg_model=ptg_model,
                         env=eval_env,
@@ -413,7 +414,8 @@ def train(config: TrainConfig):
                         os.makedirs(video_folder, exist_ok=True)
                         arrays_to_video(attention_frames, f'{video_folder}/attention_t={step}.mp4', scale_factor=5)
                         arrays_to_video(render_frames, f'{video_folder}/render_t={step}.mp4', scale_factor=1)
-
+                        if config.use_planning_token:
+                            arrays_to_video(pt_frames, f'{video_folder}/planning-token_t={step}.mp4', scale_factor=1, fps=1)
                     # unscale for logging & correct normalized score computation
                     eval_returns.append(eval_return / config.reward_scale)
 

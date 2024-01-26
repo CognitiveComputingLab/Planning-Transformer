@@ -47,7 +47,7 @@ def log_attention_maps(attention_maps, log_key="attention_map_grid", log_to_wand
 
     return maps
 
-def log_tensor_as_image(tensor, log_key="tensor_visualization"):
+def log_tensor_as_image(tensor, log_key="tensor_visualization", log_to_wandb=True):
     # Ensure the tensor is 1-dimensional
     if tensor.ndim != 1:
         raise ValueError("Input tensor must be 1-dimensional")
@@ -74,8 +74,10 @@ def log_tensor_as_image(tensor, log_key="tensor_visualization"):
     # Close the plt figure to free memory
     plt.close(fig)
 
-    # Log the image to wandb
-    wandb.log({log_key: wandb.Image(img)})
+    if log_to_wandb:
+        # Log the image to wandb
+        wandb.log({log_key: wandb.Image(img)})
+    return np.array(img)
 
 def arrays_to_video(arrays, output_file, scale_factor=1.0, fps=30.0):
     """
