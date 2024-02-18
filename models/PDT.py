@@ -2,12 +2,7 @@
 Modified version of the single file implementation of Decision transformer as provided by the CORL team
 """
 
-import io
 import warnings
-from concurrent.futures import ProcessPoolExecutor
-from tqdm import tqdm
-
-import matplotlib.pyplot as plt
 
 warnings.filterwarnings('ignore')
 warnings.filterwarnings('ignore', category=DeprecationWarning, module='numpy.*')
@@ -22,7 +17,7 @@ os.environ["WANDB_SILENT"] = "false"
 
 import d4rl  # noqa
 from DT import *
-from PTG_mult import PlanningTokenGenerator
+from models.archive.PTG_mult import PlanningTokenGenerator
 from utils import log_attention_maps, log_tensor_as_image, arrays_to_video
 
 
