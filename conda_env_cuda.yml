@@ -19,3 +19,4 @@ dependencies:
     - wandb==0.16.0
     - cython==0.29.36
     - opencv-python==4.9.0
+    - shapely

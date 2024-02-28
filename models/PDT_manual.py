@@ -18,7 +18,7 @@ os.environ["WANDB_SILENT"] = "false"
 import d4rl  # noqa
 from DT import *
 from utils import log_attention_maps, log_tensor_as_image, arrays_to_video
-from shapely.geometry import LineString
+from utils.path_simplify import simplify_path_to_target_points
 
 
 @dataclass
@@ -100,39 +100,14 @@ class TrainConfig:
         if self.checkpoints_path is not None:
             self.checkpoints_path = os.path.join(self.checkpoints_path, self.name)
 
-
-def simplify_path_to_target_points(path, target_points, tolerance=0.1, tolerance_increment=0.05):
-    # Create a LineString from the path
-    line = LineString(path)
-
-    # Initial simplification
-    simplified_line = line.simplify(tolerance)
-    simplified_points = list(simplified_line.coords)
-
-    # Adjust tolerance until the number of simplified points is close to target_points
-    while len(simplified_points) != target_points:
-        if len(simplified_points) > target_points:
-            tolerance += tolerance_increment
-        else:
-            tolerance -= tolerance_increment
-            tolerance_increment /= 2  # Decrease increment to avoid overshooting too much
-
-        simplified_line = line.simplify(tolerance)
-        simplified_points = list(simplified_line.coords)
-
-        # Break if tolerance becomes too small to avoid infinite loop
-        if tolerance <= 0 or tolerance_increment < 1e-5:
-            break
-
-    return simplified_points
-
 class SequenceManualPlanDataset(SequenceDataset):
-    def __init__(self, env_name: str, seq_len: int = 10, reward_scale: float = 1.0):
+    def __init__(self, env_name: str, seq_len: int = 10, reward_scale: float = 1.0, path_length=50):
         super().__init__(env_name, seq_len, reward_scale)
+        self.path_length = path_length
 
     def create_plan(self,states):
         positions = states[:2]
-
+        return simplify_path_to_target_points(positions,self.path_length)
     def __prepare_sample(self, traj_idx, start_idx):
         traj = self.dataset[traj_idx]
         # https://github.com/kzl/decision-transformer/blob/e2d82e68f330c00f763507b3b01d774740bee53f/gym/experiment.py#L128 # noqa
@@ -332,8 +307,11 @@ def train(config: TrainConfig):
     wandb_init(asdict(config))
 
     # data & dataloader setup
-    dataset = SequenceDataset(
-        config.env_name, seq_len=config.seq_len, reward_scale=config.reward_scale
+    dataset = SequenceManualPlanDataset(
+        config.env_name,
+        seq_len=config.seq_len,
+        reward_scale=config.reward_scale,
+        path_length=config.embedding_dim
     )
     trainloader = DataLoader(
         dataset,
