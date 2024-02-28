@@ -18,6 +18,7 @@ os.environ["WANDB_SILENT"] = "false"
 import d4rl  # noqa
 from DT import *
 from utils import log_attention_maps, log_tensor_as_image, arrays_to_video
+from shapely.geometry import LineString
 
 
 @dataclass
@@ -87,21 +88,74 @@ class TrainConfig:
     log_attn_weights: bool = False
     log_attn_every: int = 100
 
-    # Add new fields for PTG
-    ptg_num_layers: int = 3  # Number of transformer layers for PTG
-    ptg_learning_rate: float = 1e-2  # Learning rate for PTG optimizer
-    ptg_warmup_steps: int = warmup_steps # Warmup steps for PTG learning rate scheduler
-    use_planning_token: bool = True
+    # Options for planning tokens
     num_planning_tokens: int = 5
 
     # video
-    record_video: bool=False
+    record_video: bool = False
     run_name: str = "run_0"
 
     def __post_init__(self):
         self.name = f"{self.name}-{self.env_name}-{str(uuid.uuid4())[:8]}"
         if self.checkpoints_path is not None:
             self.checkpoints_path = os.path.join(self.checkpoints_path, self.name)
+
+
+def simplify_path_to_target_points(path, target_points, tolerance=0.1, tolerance_increment=0.05):
+    # Create a LineString from the path
+    line = LineString(path)
+
+    # Initial simplification
+    simplified_line = line.simplify(tolerance)
+    simplified_points = list(simplified_line.coords)
+
+    # Adjust tolerance until the number of simplified points is close to target_points
+    while len(simplified_points) != target_points:
+        if len(simplified_points) > target_points:
+            tolerance += tolerance_increment
+        else:
+            tolerance -= tolerance_increment
+            tolerance_increment /= 2  # Decrease increment to avoid overshooting too much
+
+        simplified_line = line.simplify(tolerance)
+        simplified_points = list(simplified_line.coords)
+
+        # Break if tolerance becomes too small to avoid infinite loop
+        if tolerance <= 0 or tolerance_increment < 1e-5:
+            break
+
+    return simplified_points
+
+class SequenceManualPlanDataset(SequenceDataset):
+    def __init__(self, env_name: str, seq_len: int = 10, reward_scale: float = 1.0):
+        super().__init__(env_name, seq_len, reward_scale)
+
+    def create_plan(self,states):
+        positions = states[:2]
+
+    def __prepare_sample(self, traj_idx, start_idx):
+        traj = self.dataset[traj_idx]
+        # https://github.com/kzl/decision-transformer/blob/e2d82e68f330c00f763507b3b01d774740bee53f/gym/experiment.py#L128 # noqa
+        goal = traj["observations"][0]
+        states = traj["observations"][start_idx: start_idx + self.seq_len]
+        actions = traj["actions"][start_idx: start_idx + self.seq_len]
+        returns = traj["returns"][start_idx: start_idx + self.seq_len]
+        time_steps = np.arange(start_idx, start_idx + self.seq_len)
+
+        plan = self.create_plan(states)
+
+        states = (states - self.state_mean) / self.state_std
+        returns = returns * self.reward_scale
+        # pad up to seq_len if needed, padding is masked during training
+        mask = np.hstack(
+            [np.ones(states.shape[0]), np.zeros(self.seq_len - states.shape[0])]
+        )
+        if states.shape[0] < self.seq_len:
+            states = pad_along_axis(states, pad_to=self.seq_len)
+            actions = pad_along_axis(actions, pad_to=self.seq_len)
+            returns = pad_along_axis(returns, pad_to=self.seq_len)
+
+        return goal, states, actions, returns, time_steps, mask, plan
 
 
 class PlanningDecisionTransformer(DecisionTransformer):
@@ -114,7 +168,6 @@ class PlanningDecisionTransformer(DecisionTransformer):
                  num_heads: int = 8,
                  attention_dropout: float = 0.0,
                  residual_dropout: float = 0.0,
-                 use_planning_token: bool = True,
                  num_planning_tokens: int = 5,
                  **kwargs
                  ):
@@ -130,7 +183,7 @@ class PlanningDecisionTransformer(DecisionTransformer):
         self.blocks = nn.ModuleList(
             [
                 TransformerBlock(
-                    seq_len=3 * seq_len + use_planning_token*num_planning_tokens,  # Adjusted for the planning token
+                    seq_len=3 * seq_len + num_planning_tokens,  # Adjusted for the planning token
                     embedding_dim=embedding_dim,
                     num_heads=num_heads,
                     attention_dropout=attention_dropout,
@@ -139,8 +192,8 @@ class PlanningDecisionTransformer(DecisionTransformer):
                 for _ in range(num_layers)
             ]
         )
-        self.use_planning_token = use_planning_token
         self.num_planning_tokens = num_planning_tokens
+        self.planning_head = nn.Sequential(nn.Linear(embedding_dim, action_dim), nn.Tanh())
 
     def forward(self, states, actions, returns_to_go, time_steps, planning_token, padding_mask=None,
                 log_attention=False):
@@ -155,24 +208,25 @@ class PlanningDecisionTransformer(DecisionTransformer):
         # [batch_size, seq_len * 3, emb_dim], (r_0, s_0, a_0, r_1, s_1, a_1, ...)
         sequence = (
             torch.stack([returns_emb, state_emb, act_emb], dim=1)
-            .permute(0, 2, 1, 3)
-            .reshape(batch_size, 3 * seq_len, self.embedding_dim)
+                .permute(0, 2, 1, 3)
+                .reshape(batch_size, 3 * seq_len, self.embedding_dim)
         )
 
-        if self.use_planning_token:
-            sequence = torch.cat([planning_token, sequence], dim=1)
+        first_state_rtg = sequence[:, :2, :]  # shape [batch_size, 2, emb_dim]
+        remaining_elements = sequence[:, 2:, :]  # shape [batch_size, 3*seq_len-2, emb_dim]
+        sequence = torch.cat([first_state_rtg, planning_token, remaining_elements], dim=1)
 
         if padding_mask is not None:
             # [batch_size, seq_len * 3], stack mask identically to fit the sequence
             padding_mask = (
                 torch.stack([padding_mask, padding_mask, padding_mask], dim=1)
-                .permute(0, 2, 1)
-                .reshape(batch_size, 3 * seq_len)
+                    .permute(0, 2, 1)
+                    .reshape(batch_size, 3 * seq_len)
             )
-            if self.use_planning_token:
-                # account for the planning token in the mask
-                planning_token_mask = torch.zeros(batch_size, self.num_planning_tokens, dtype=torch.bool, device=planning_token.device)
-                padding_mask = torch.cat([planning_token_mask, padding_mask], dim=1)
+            # account for the planning token in the mask
+            planning_token_mask = torch.zeros(batch_size, self.num_planning_tokens, dtype=torch.bool,
+                                              device=planning_token.device)
+            padding_mask = torch.cat([planning_token_mask, padding_mask], dim=1)
 
         # LayerNorm and Dropout (!!!) as in original implementation,
         # while minGPT & huggingface uses only embedding dropout
@@ -188,8 +242,11 @@ class PlanningDecisionTransformer(DecisionTransformer):
         out = self.out_norm(out)
         # [batch_size, seq_len, action_dim]
         # predict actions only from state embeddings
-        out = self.action_head(out[:, (1 + self.use_planning_token*self.num_planning_tokens)::3]) * self.max_action  # The "+ 1" accounts for the planning token
-        return out, attention_maps
+        out_planning_tokens = self.planning_head(out[:, 1:self.num_planning_tokens + 1])
+        out_actions = self.action_head(
+            out[:, (1 + self.num_planning_tokens)::3]) * self.max_action  # The "+ 1" accounts for the planning token
+
+        return out_planning_tokens, out_actions, attention_maps
 
 
 # Training and evaluation logic
@@ -198,16 +255,12 @@ def eval_rollout(
         pdt_model: PlanningDecisionTransformer,
         env: gym.Env,
         target_return: float,
+        num_planning_tokens: int,
         device: str = "gpu",
-        use_planning_token: bool = True,
-        ep_id = 0
+        ep_id=0,
 ) -> Tuple[float, float, list, list, list]:
-    states = torch.zeros(
-        1, pdt_model.episode_len + 1, pdt_model.state_dim, dtype=torch.float, device=device
-    )
-    actions = torch.zeros(
-        1, pdt_model.episode_len, pdt_model.action_dim, dtype=torch.float, device=device
-    )
+    states = torch.zeros(1, pdt_model.episode_len + 1, pdt_model.state_dim, dtype=torch.float, device=device)
+    actions = torch.zeros(1, pdt_model.episode_len, pdt_model.action_dim, dtype=torch.float, device=device)
     returns = torch.zeros(1, pdt_model.episode_len + 1, dtype=torch.float, device=device)
     time_steps = torch.arange(pdt_model.episode_len, dtype=torch.long, device=device)
     time_steps = time_steps.view(1, -1)
@@ -219,30 +272,38 @@ def eval_rollout(
     attention_map_frames = []
     render_frames = []
     pt_frames = []
-
-    def model_call(step, is_planning_token, log_attention):
-        return pdt_model(
-            states[:, : step + 1][:, -pdt_model.seq_len:],
-            actions[:, : step + 1][:, -pdt_model.seq_len:],
-            returns[:, : step + 1][:, -pdt_model.seq_len:],
-            time_steps[:, : step + 1][:, -pdt_model.seq_len:],
-            None if is_planning_token else planning_token,
-            is_planning_token=is_planning_token,
-            log_attention=log_attention
-        )
+    planning_tokens = None
 
     for step in range(pdt_model.episode_len):
-        planning_token = None
-        if step % 20 == 0 and use_planning_token:
-            # Generate the planning token every 20 steps (partial replanning)
-            planning_token, _ = model_call(step, is_planning_token=1, log_attention=False)
-            pt_frame = log_tensor_as_image(planning_token[0].view(-1), f"planning_token_ep_{ep_id}", log_to_wandb=False)
+        # Generate the planning token every 20 steps (partial replanning)
+        if step % 20 == 0:
+            planning_tokens = torch.zeros(1, num_planning_tokens, pdt_model.state_dim, dtype=torch.float, device=device)
+            # plan tokens are generated via an autoregressive generation loop just like is done in NLP generation tasks
+            for plan_token_i in range(num_planning_tokens):
+                pred_planning_tokens, _, _ = pdt_model(
+                    states[:, -1:],
+                    torch.zeros(1, 1, pdt_model.action_dim, dtype=torch.float, device=device),
+                    returns[:, -1:],
+                    time_steps[:, -1:],
+                    planning_token=planning_tokens[:, :plan_token_i],
+                    log_attention=False
+                )
+                planning_tokens[:, plan_token_i] = pred_planning_tokens[0, -1]
+            pt_frame = log_tensor_as_image(planning_tokens[0].view(-1), f"planning_token_ep_{ep_id}",
+                                           log_to_wandb=False)
             pt_frames.append(pt_frame)
 
         if ep_id < 3:
             render_frames.append(env.render(mode="rgb_array"))
 
-        predicted_actions, attention_maps = model_call(step, is_planning_token=0, log_attention=ep_id < 3)
+        _, predicted_actions, attention_maps = pdt_model(
+            states[:, : step + 1][:, -pdt_model.seq_len:],
+            actions[:, : step + 1][:, -pdt_model.seq_len:],
+            returns[:, : step + 1][:, -pdt_model.seq_len:],
+            time_steps[:, : step + 1][:, -pdt_model.seq_len:],
+            planning_tokens,
+            log_attention=True
+        )
         predicted_action = predicted_actions[0, -1].cpu().numpy()
         next_state, reward, done, info = env.step(predicted_action)
 
@@ -260,6 +321,7 @@ def eval_rollout(
             break
 
     return episode_return, episode_len, attention_map_frames, render_frames, pt_frames
+
 
 @pyrallis.wrap()
 def train(config: TrainConfig):
@@ -301,7 +363,6 @@ def train(config: TrainConfig):
         residual_dropout=config.residual_dropout,
         embedding_dropout=config.embedding_dropout,
         max_action=config.max_action,
-        use_planning_token=config.use_planning_token,
         num_planning_tokens=config.num_planning_tokens
     ).to(config.device)
 
@@ -329,33 +390,31 @@ def train(config: TrainConfig):
     for step in trange(config.update_steps, desc="Training"):
         # print(f"step {step} in train loop")
         batch = next(trainloader_iter)
-        states, actions, returns, time_steps, mask = [b.to(config.device) for b in batch]
+        states, actions, returns, planning_tokens, time_steps, mask = [b.to(config.device) for b in batch]
         # True value indicates that the corresponding key value will be ignored
         padding_mask = ~mask.to(torch.bool)
 
-        planning_token = ptg_model(states[:, 0, :]) if config.use_planning_token else None
-
-        # Forward pass through the model with planning token
-        predicted_actions, attention_maps = pdt_model(
+        # Forward pass through the model with planning tokens
+        predicted_planning_tokens, predicted_actions, attention_maps = pdt_model(
             states=states,
             actions=actions,
             returns_to_go=returns,
             time_steps=time_steps,
-            planning_token=planning_token,  # Include planning token in the model's forward pass
+            planning_token=planning_tokens,  # Include planning tokens in the model's forward pass
             padding_mask=padding_mask,
             log_attention=False
         )
 
-        main_loss = F.mse_loss(predicted_actions, actions.detach(), reduction="none")
-        main_loss = (main_loss * mask.unsqueeze(-1)).mean()
-
+        plan_loss = F.mse_loss(predicted_planning_tokens, planning_tokens.detach(), reduction="mean")
+        action_loss = F.mse_loss(predicted_actions, actions.detach(), reduction="none")
+        action_loss = (action_loss * mask.unsqueeze(-1)).mean()
+        combined_loss = 0.5 * action_loss + 0.5 * plan_loss
         # Backpropagation and optimization for main model
 
         optim.zero_grad()
-        main_loss.backward()
+        combined_loss.backward()
         if config.clip_grad is not None:
             torch.nn.utils.clip_grad_norm_(pdt_model.parameters(), config.clip_grad)
-            if config.use_planning_token: torch.nn.utils.clip_grad_norm_(ptg_model.parameters(), config.clip_grad)
         optim.step()
         scheduler.step()
         #
@@ -367,7 +426,9 @@ def train(config: TrainConfig):
         # print("train_loss", main_loss.item())
         wandb.log(
             {
-                "train_loss": main_loss.item(),
+                "train_action_loss": action_loss.item(),
+                "train_plan_loss": plan_loss.item(),
+                "train_combined_loss": combined_loss.item(),
                 "learning_rate": scheduler.get_last_lr()[0],
             },
             step=step,
@@ -377,29 +438,25 @@ def train(config: TrainConfig):
         #  and step != 0
         if (step % config.eval_every == 0) or step == config.update_steps - 1:
             pdt_model.eval()
-            if config.use_planning_token: ptg_model.eval()
             for target_return in config.target_returns:
                 eval_env.seed(config.eval_seed)
                 eval_returns = []
                 for ep_id in trange(config.eval_episodes, desc="Evaluation", leave=False):
-                    video_folder = f'./video/{"PDT" if config.use_planning_token else "DT"}_' \
-                                            f'{config.env_name}/{config.run_name}/episode-{ep_id}'
+                    video_folder = f'./video/PDTv2/{config.env_name}/{config.run_name}/episode-{ep_id}'
 
-                    eval_return, eval_len, attention_frames,render_frames, pt_frames = eval_rollout(
+                    eval_return, eval_len, attention_frames, render_frames, pt_frames = eval_rollout(
                         pdt_model=pdt_model,
-                        ptg_model=ptg_model,
                         env=eval_env,
                         target_return=target_return * config.reward_scale,
+                        num_planning_tokens=config.num_planning_tokens,
                         device=config.device,
-                        use_planning_token=config.use_planning_token,
                         ep_id=ep_id
                     )
                     if ep_id < 3:
                         os.makedirs(video_folder, exist_ok=True)
                         arrays_to_video(attention_frames, f'{video_folder}/attention_t={step}.mp4', scale_factor=5)
                         arrays_to_video(render_frames, f'{video_folder}/render_t={step}.mp4', scale_factor=1)
-                        if config.use_planning_token:
-                            arrays_to_video(pt_frames, f'{video_folder}/planning-token_t={step}.mp4', scale_factor=1, fps=1)
+                        arrays_to_video(pt_frames, f'{video_folder}/planning-token_t={step}.mp4', scale_factor=1, fps=1)
                     # unscale for logging & correct normalized score computation
                     eval_returns.append(eval_return / config.reward_scale)
 
@@ -421,12 +478,10 @@ def train(config: TrainConfig):
                     step=step,
                 )
             pdt_model.train()
-            if config.use_planning_token: ptg_model.train()
 
         if config.checkpoints_path is not None:
             checkpoint = {
                 "pdt_model_state": pdt_model.state_dict(),
-                "ptg_model_state": ptg_model.state_dict() if config.use_planning_token else None,
                 "state_mean": dataset.state_mean,
                 "state_std": dataset.state_std,
             }

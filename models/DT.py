@@ -176,6 +176,7 @@ def load_d4rl_trajectories(
         data_["observations"].append(dataset["observations"][i])
         data_["actions"].append(dataset["actions"][i])
         data_["rewards"].append(dataset["rewards"][i])
+        data_["goals"].append(dataset["info/goal"][i])
 
         if dataset["terminals"][i] or dataset["timeouts"][i]:
             episode_data = {k: np.array(v, dtype=np.float32) for k, v in data_.items()}
@@ -199,16 +200,16 @@ def load_d4rl_trajectories(
 
 class SequenceDataset(IterableDataset):
     def __init__(self, env_name: str, seq_len: int = 10, reward_scale: float = 1.0):
-        self.dataset, info = load_d4rl_trajectories(env_name, gamma=1.0)
+        self.dataset, self.info = load_d4rl_trajectories(env_name, gamma=1.0)
         self.reward_scale = reward_scale
         self.seq_len = seq_len
 
-        self.state_mean = info["obs_mean"]
-        self.state_std = info["obs_std"]
+        self.state_mean = self.info["obs_mean"]
+        self.state_std = self.info["obs_std"]
         # https://github.com/kzl/decision-transformer/blob/e2d82e68f330c00f763507b3b01d774740bee53f/gym/experiment.py#L116 # noqa
-        self.sample_prob = info["traj_lens"] / info["traj_lens"].sum()
+        self.sample_prob = self.info["traj_lens"] / self.info["traj_lens"].sum()
 
-    def __prepare_sample(self, traj_idx, start_idx):
+    def _prepare_sample(self, traj_idx, start_idx):
         traj = self.dataset[traj_idx]
         # https://github.com/kzl/decision-transformer/blob/e2d82e68f330c00f763507b3b01d774740bee53f/gym/experiment.py#L128 # noqa
         states = traj["observations"][start_idx: start_idx + self.seq_len]
@@ -233,7 +234,7 @@ class SequenceDataset(IterableDataset):
         while True:
             traj_idx = np.random.choice(len(self.dataset), p=self.sample_prob)
             start_idx = random.randint(0, self.dataset[traj_idx]["rewards"].shape[0] - 1)
-            yield self.__prepare_sample(traj_idx, start_idx)
+            yield self._prepare_sample(traj_idx, start_idx)
 
 
 # Decision Transformer implementation
