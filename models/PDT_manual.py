@@ -170,7 +170,7 @@ class PlanningDecisionTransformer(DecisionTransformer):
         self.num_planning_tokens = num_planning_tokens
         self.planning_head = nn.Sequential(nn.Linear(embedding_dim, action_dim), nn.Tanh())
 
-    def forward(self, states, actions, returns_to_go, time_steps, planning_token, padding_mask=None,
+    def forward(self, goal, states, actions, returns_to_go, time_steps, planning_token, padding_mask=None,
                 log_attention=False):
         batch_size, seq_len = states.shape[0], states.shape[1]
         # [batch_size, seq_len, emb_dim]
@@ -256,6 +256,7 @@ def eval_rollout(
             # plan tokens are generated via an autoregressive generation loop just like is done in NLP generation tasks
             for plan_token_i in range(num_planning_tokens):
                 pred_planning_tokens, _, _ = pdt_model(
+                    env.target_goal,
                     states[:, -1:],
                     torch.zeros(1, 1, pdt_model.action_dim, dtype=torch.float, device=device),
                     returns[:, -1:],
@@ -368,12 +369,13 @@ def train(config: TrainConfig):
     for step in trange(config.update_steps, desc="Training"):
         # print(f"step {step} in train loop")
         batch = next(trainloader_iter)
-        states, actions, returns, planning_tokens, time_steps, mask = [b.to(config.device) for b in batch]
+        goal, states, actions, returns, planning_tokens, time_steps, mask = [b.to(config.device) for b in batch]
         # True value indicates that the corresponding key value will be ignored
         padding_mask = ~mask.to(torch.bool)
 
         # Forward pass through the model with planning tokens
         predicted_planning_tokens, predicted_actions, attention_maps = pdt_model(
+            goal=goal,
             states=states,
             actions=actions,
             returns_to_go=returns,
