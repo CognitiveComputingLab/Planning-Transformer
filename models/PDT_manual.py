@@ -4,6 +4,8 @@ Modified version of the single file implementation of Decision transformer as pr
 
 import warnings
 
+import torch
+
 warnings.filterwarnings('ignore')
 warnings.filterwarnings('ignore', category=DeprecationWarning, module='numpy.*')
 
@@ -108,6 +110,7 @@ class SequenceManualPlanDataset(SequenceDataset):
     def create_plan(self,states):
         positions = states[:2]
         return simplify_path_to_target_points(positions,self.path_length)
+
     def __prepare_sample(self, traj_idx, start_idx):
         traj = self.dataset[traj_idx]
         # https://github.com/kzl/decision-transformer/blob/e2d82e68f330c00f763507b3b01d774740bee53f/gym/experiment.py#L128 # noqa
@@ -131,6 +134,12 @@ class SequenceManualPlanDataset(SequenceDataset):
             returns = pad_along_axis(returns, pad_to=self.seq_len)
 
         return goal, states, actions, returns, time_steps, mask, plan
+
+
+def construct_sequence_with_goal_and_plan(goal, plan, rsa_sequence):
+    first_rs = rsa_sequence[:, :2, :]  # shape [batch_size, 2, emb_dim]
+    remaining_elements = rsa_sequence[:, 2:, :]  # shape [batch_size, 3*seq_len-2, emb_dim]
+    return torch.cat([goal, first_rs, plan, remaining_elements], dim=1)
 
 
 class PlanningDecisionTransformer(DecisionTransformer):
@@ -176,6 +185,8 @@ class PlanningDecisionTransformer(DecisionTransformer):
         # [batch_size, seq_len, emb_dim]
         time_emb = self.timestep_emb(time_steps)
 
+        device = states.device
+        goal_token = torch.from_numpy(np.pad(goal, ((0, 0), (0, self.embedding_dim - goal.shape[1])), 'constant')).to(device)
         state_emb = self.state_emb(states) + time_emb
         act_emb = self.action_emb(actions) + time_emb
         returns_emb = self.return_emb(returns_to_go.unsqueeze(-1)) + time_emb
@@ -187,9 +198,7 @@ class PlanningDecisionTransformer(DecisionTransformer):
                 .reshape(batch_size, 3 * seq_len, self.embedding_dim)
         )
 
-        first_state_rtg = sequence[:, :2, :]  # shape [batch_size, 2, emb_dim]
-        remaining_elements = sequence[:, 2:, :]  # shape [batch_size, 3*seq_len-2, emb_dim]
-        sequence = torch.cat([first_state_rtg, planning_token, remaining_elements], dim=1)
+        sequence = construct_sequence_with_goal_and_plan(goal, planning_token, sequence)
 
         if padding_mask is not None:
             # [batch_size, seq_len * 3], stack mask identically to fit the sequence
@@ -199,9 +208,13 @@ class PlanningDecisionTransformer(DecisionTransformer):
                     .reshape(batch_size, 3 * seq_len)
             )
             # account for the planning token in the mask
+            # True values in the mask mean don't attend to, so we use zeroes so the plan and goal are always attended to
             planning_token_mask = torch.zeros(batch_size, self.num_planning_tokens, dtype=torch.bool,
-                                              device=planning_token.device)
-            padding_mask = torch.cat([planning_token_mask, padding_mask], dim=1)
+                                              device=device)
+            goal_mask = torch.zeros(batch_size, goal_token.shape[0], dtype=torch.bool,
+                                              device=device)
+
+            padding_mask = construct_sequence_with_goal_and_plan(goal_mask, planning_token_mask, padding_mask)
 
         # LayerNorm and Dropout (!!!) as in original implementation,
         # while minGPT & huggingface uses only embedding dropout
