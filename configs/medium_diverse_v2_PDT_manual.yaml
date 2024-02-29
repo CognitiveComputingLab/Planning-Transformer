@@ -36,3 +36,5 @@ record_video: 1
 run_name: "run_1"
 num_planning_tokens: 1
 eval_offline_every: 50
+bg_image: "./antmaze_medium_bg.png"
+eval_path_plot_every: 1000

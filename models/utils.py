@@ -6,6 +6,9 @@ import matplotlib
 import numpy as np
 import io
 import cv2
+import pickle
+import os
+from shapely.geometry import LineString
 
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
@@ -119,3 +122,94 @@ def arrays_to_video(arrays, output_file, scale_factor=1.0, fps=30.0):
 
     # Release everything when job is finished
     out.release()
+
+
+def world_to_image(coords):
+    scale_factor = 5
+    offset = np.array([44, 21])
+    return scale_factor * coords + offset
+
+
+def plot_and_log_paths(image_path, start, goal, plan_paths, ant_path, output_folder, index):
+    # Load the background image
+    bg_image = plt.imread(image_path)
+
+    # Create figure and axes
+    fig, ax = plt.subplots()
+    ax.imshow(bg_image)
+
+    # Convert coordinates
+    start_img = world_to_image(np.array(start))
+    goal_img = world_to_image(np.array(goal))
+    ant_path_img = np.array([world_to_image(np.array(p)) for p in ant_path])
+
+    # Plot plan path with blue line and dots
+    for plan_path in plan_paths:
+        plan_path_img = np.array([world_to_image(np.array(p)) for p in plan_path])
+        ax.plot(plan_path_img[:, 0], plan_path_img[:, 1], 'bo-', linewidth=2, markersize=5)
+
+    if ant_path:
+        # Plot ant path with rainbow line
+        ax.scatter(ant_path_img[:, 0], ant_path_img[:, 1], c=np.linspace(0, 1, len(ant_path_img)), cmap='rainbow', s=2)
+        ax.plot(ant_path_img[:, 0], ant_path_img[:, 1], c='rainbow', linewidth=2)
+
+    # Mark start and goal
+    ax.plot(start_img[0], start_img[1], 'go', markersize=10)  # Start in green
+    ax.scatter(goal_img[0], goal_img[1], s=100, c='silver', marker='*', zorder=5)  # Goal in silver
+
+    # Remove axes for better visualization
+    ax.axis('off')
+
+    # Save the image
+    output_path = os.path.join(output_folder, f"path_{index}.png")
+    plt.savefig(output_path, bbox_inches='tight')
+    plt.close()
+
+    # Log image to wandb
+    wandb.log({f"path_{index}": wandb.Image(output_path)})
+
+    # Pickle the data
+    with open(os.path.join(output_folder, f"path_data_{index}.pkl"), 'wb') as f:
+        pickle.dump({'start': start, 'goal': goal, 'plan_paths': plan_paths, 'ant_path': ant_path}, f)
+
+def adjust_path_points(simplified_points, target_points):
+    while len(simplified_points) < target_points:
+        # Find indices of the furthest consecutive points
+        furthest_idx = max(range(len(simplified_points) - 1),
+                           key=lambda i: np.linalg.norm(np.array(simplified_points[i]) - np.array(simplified_points[i + 1])))
+        # Insert a midpoint
+        midpoint = tuple(np.mean([simplified_points[furthest_idx], simplified_points[furthest_idx + 1]], axis=0))
+        simplified_points.insert(furthest_idx + 1, midpoint)
+
+    while len(simplified_points) > target_points:
+        # Find indices of the closest consecutive points
+        closest_idx = min(range(len(simplified_points) - 1),
+                          key=lambda i: np.linalg.norm(np.array(simplified_points[i]) - np.array(simplified_points[i + 1])))
+        # Remove one of the closest points
+        del simplified_points[closest_idx]
+
+def simplify_path_to_target_points(path, target_points, tolerance=0.1, tolerance_increment=0.05):
+    if len(path) < 2 or target_points >= len(path):
+        return path
+
+    line = LineString(path)
+    simplified_line = line.simplify(tolerance)
+    simplified_points = list(simplified_line.coords)
+
+    while len(simplified_points) != target_points:
+        if len(simplified_points) > target_points:
+            tolerance += tolerance_increment
+        else:
+            tolerance -= tolerance_increment
+            tolerance_increment /= 2
+
+        simplified_line = line.simplify(tolerance)
+        simplified_points = list(simplified_line.coords)
+
+        if tolerance <= 0 or tolerance_increment < 1e-5:
+            break
+
+    # Directly adjust the number of points to match the target
+    adjust_path_points(simplified_points, target_points)
+
+    return simplified_points

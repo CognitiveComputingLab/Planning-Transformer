@@ -19,8 +19,8 @@ os.environ["WANDB_SILENT"] = "false"
 
 import d4rl  # noqa
 from DT import *
-from utils import log_attention_maps, log_tensor_as_image, arrays_to_video
-from utils.path_simplify import simplify_path_to_target_points
+from utils import log_attention_maps, log_tensor_as_image, arrays_to_video, plot_and_log_paths
+from utils import simplify_path_to_target_points
 
 
 @dataclass
@@ -96,6 +96,9 @@ class TrainConfig:
     # video
     record_video: bool = False
     run_name: str = "run_0"
+    bg_image: str = "./antmaze_medium_bg.png"
+    eval_offline_every: int = 50
+    eval_path_plot_every: int = 1000
 
     def __post_init__(self):
         self.name = f"{self.name}-{self.env_name}-{str(uuid.uuid4())[:8]}"
@@ -246,7 +249,7 @@ def eval_rollout(
         num_planning_tokens: int,
         device: str = "gpu",
         ep_id=0,
-) -> Tuple[float, float, list, list, list]:
+) -> Tuple[float, float, list, list, list, list, np.ndarray]:
     states = torch.zeros(1, pdt_model.episode_len + 1, pdt_model.state_dim, dtype=torch.float, device=device)
     actions = torch.zeros(1, pdt_model.episode_len, pdt_model.action_dim, dtype=torch.float, device=device)
     returns = torch.zeros(1, pdt_model.episode_len + 1, dtype=torch.float, device=device)
@@ -261,7 +264,7 @@ def eval_rollout(
     render_frames = []
     pt_frames = []
     planning_tokens = None
-
+    plan_path = []
     for step in range(pdt_model.episode_len):
         # Generate the planning token every 20 steps (partial replanning)
         if step % 20 == 0:
@@ -278,9 +281,12 @@ def eval_rollout(
                     log_attention=False
                 )
                 planning_tokens[:, plan_token_i] = pred_planning_tokens[0, -1]
-            pt_frame = log_tensor_as_image(planning_tokens[0].view(-1), f"planning_token_ep_{ep_id}",
+
+            plan_path.append(planning_tokens[0].cpu())
+            pt_frame = log_tensor_as_image(plan_path[-1].view(-1), f"planning_token_ep_{ep_id}",
                                            log_to_wandb=False)
             pt_frames.append(pt_frame)
+
 
         if ep_id < 3:
             render_frames.append(env.render(mode="rgb_array"))
@@ -308,8 +314,8 @@ def eval_rollout(
 
         if done:
             break
-
-    return episode_return, episode_len, attention_map_frames, render_frames, pt_frames
+    ant_path = states[0, :, :2].cpu().numpy()
+    return episode_return, episode_len, attention_map_frames, render_frames, pt_frames, plan_path, ant_path
 
 
 @pyrallis.wrap()
@@ -379,9 +385,14 @@ def train(config: TrainConfig):
 
     print(f"Total parameters (DT): {sum(p.numel() for p in pdt_model.parameters())}")
     trainloader_iter = iter(trainloader)
+    first_batch = None
     for step in trange(config.update_steps, desc="Training"):
         # print(f"step {step} in train loop")
         batch = next(trainloader_iter)
+        if step == 0:
+            first_batch = batch
+        if step % config.eval_offline_every:
+            batch = first_batch
         goal, states, actions, returns, planning_tokens, time_steps, mask = [b.to(config.device) for b in batch]
         # True value indicates that the corresponding key value will be ignored
         padding_mask = ~mask.to(torch.bool)
@@ -398,6 +409,16 @@ def train(config: TrainConfig):
             log_attention=False
         )
 
+        if step % config.eval_offline_every == 0:
+            plot_and_log_paths(
+                image_path=config.bg_image,
+                start= states[0][0][:2],
+                goal=goal,
+                plan_path=[predicted_planning_tokens[0]],
+                ant_path=None,
+                output_folder=f'./paths/PDTv2/{config.env_name}/{config.run_name}/train',
+                index=step
+            )
         plan_loss = F.mse_loss(predicted_planning_tokens, planning_tokens.detach(), reduction="mean")
         action_loss = F.mse_loss(predicted_actions, actions.detach(), reduction="none")
         action_loss = (action_loss * mask.unsqueeze(-1)).mean()
@@ -405,7 +426,9 @@ def train(config: TrainConfig):
         # Backpropagation and optimization for main model
 
         optim.zero_grad()
-        combined_loss.backward()
+        if not step % config.eval_offline_every == 0:
+            combined_loss.backward()
+
         if config.clip_grad is not None:
             torch.nn.utils.clip_grad_norm_(pdt_model.parameters(), config.clip_grad)
         optim.step()
@@ -430,7 +453,7 @@ def train(config: TrainConfig):
 
         # validation in the env for the actual online performance
         #  and step != 0
-        if (step % config.eval_every == 0) or step == config.update_steps - 1:
+        if (step % config.eval_every == 0) or (step % config.eval_path_plot_every == 0) or step == config.update_steps - 1:
             pdt_model.eval()
             for target_return in config.target_returns:
                 eval_env.seed(config.eval_seed)
@@ -438,7 +461,7 @@ def train(config: TrainConfig):
                 for ep_id in trange(config.eval_episodes, desc="Evaluation", leave=False):
                     video_folder = f'./video/PDTv2/{config.env_name}/{config.run_name}/episode-{ep_id}'
 
-                    eval_return, eval_len, attention_frames, render_frames, pt_frames = eval_rollout(
+                    eval_return, eval_len, attention_frames, render_frames, pt_frames, plan_path, ant_path = eval_rollout(
                         pdt_model=pdt_model,
                         env=eval_env,
                         target_return=target_return * config.reward_scale,
@@ -453,6 +476,19 @@ def train(config: TrainConfig):
                         arrays_to_video(pt_frames, f'{video_folder}/planning-token_t={step}.mp4', scale_factor=1, fps=1)
                     # unscale for logging & correct normalized score computation
                     eval_returns.append(eval_return / config.reward_scale)
+
+                    if not step % config.eval_every == 0 and ep_id ==0:
+                        plot_and_log_paths(
+                            image_path=config.bg_image,
+                            start=states[0][0][:2],
+                            goal=goal,
+                            plan_path=plan_path,
+                            ant_path=ant_path,
+                            output_folder=f'./paths/PDTv2/{config.env_name}/{config.run_name}/eval',
+                            index=step
+                        )
+                        break
+
 
                 normalized_scores = (
                         eval_env.get_normalized_score(np.array(eval_returns)) * 100

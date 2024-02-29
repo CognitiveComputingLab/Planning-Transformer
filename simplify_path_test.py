@@ -2,7 +2,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.widgets import Button, Slider
 import tqdm
-from utils.path_simplify import simplify_path_to_target_points
+from models.utils import simplify_path_to_target_points
 
 class PathSimplifierApp:
     def __init__(self):
