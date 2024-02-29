@@ -106,13 +106,15 @@ class TrainConfig:
             self.checkpoints_path = os.path.join(self.checkpoints_path, self.name)
 
 class SequenceManualPlanDataset(SequenceDataset):
-    def __init__(self, env_name: str, seq_len: int = 10, reward_scale: float = 1.0, path_length=50):
+    def __init__(self, env_name: str, seq_len: int = 10, reward_scale: float = 1.0, path_length=50, num_planning_tokens = 1):
         super().__init__(env_name, seq_len, reward_scale)
         self.path_length = path_length
+        self.num_planning_tokens = num_planning_tokens
 
     def create_plan(self,states):
         positions = states[:2]
-        return simplify_path_to_target_points(positions,self.path_length)
+        path = simplify_path_to_target_points(positions,self.path_length)
+        return path if self.num_planning_tokens else []
 
     def __prepare_sample(self, traj_idx, start_idx):
         traj = self.dataset[traj_idx]
@@ -331,7 +333,8 @@ def train(config: TrainConfig):
         config.env_name,
         seq_len=config.seq_len,
         reward_scale=config.reward_scale,
-        path_length=config.embedding_dim
+        path_length=config.embedding_dim,
+        num_planning_tokens=config.num_planning_tokens
     )
     trainloader = DataLoader(
         dataset,
