@@ -427,6 +427,7 @@ def train(config: TrainConfig):
             step=step,
         )
 
+
         # validation in the env for the actual online performance
         #  and step != 0
         if (step % config.eval_every == 0) or step == config.update_steps - 1:
