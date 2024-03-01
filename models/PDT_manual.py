@@ -112,20 +112,23 @@ class SequenceManualPlanDataset(SequenceDataset):
         self.num_planning_tokens = num_planning_tokens
 
     def create_plan(self,states):
-        positions = states[:2]
-        path = simplify_path_to_target_points(positions,self.path_length)
-        return path if self.num_planning_tokens else []
+        if self.num_planning_tokens:
+            positions = states[:2]
+            path = np.array(simplify_path_to_target_points(positions,self.path_length))
+            return path
+        else:
+            return np.empty((0, 64))
 
-    def __prepare_sample(self, traj_idx, start_idx):
+    def _prepare_sample(self, traj_idx, start_idx):
         traj = self.dataset[traj_idx]
         # https://github.com/kzl/decision-transformer/blob/e2d82e68f330c00f763507b3b01d774740bee53f/gym/experiment.py#L128 # noqa
-        goal = traj["observations"][0]
+        goal = traj["goals"][0:1].astype(np.float32)
         states = traj["observations"][start_idx: start_idx + self.seq_len]
         actions = traj["actions"][start_idx: start_idx + self.seq_len]
         returns = traj["returns"][start_idx: start_idx + self.seq_len]
         time_steps = np.arange(start_idx, start_idx + self.seq_len)
 
-        plan = self.create_plan(states)
+        plan = self.create_plan(states).astype(np.float32)
 
         states = (states - self.state_mean) / self.state_std
         returns = returns * self.reward_scale
@@ -142,8 +145,8 @@ class SequenceManualPlanDataset(SequenceDataset):
 
 
 def construct_sequence_with_goal_and_plan(goal, plan, rsa_sequence):
-    first_rs = rsa_sequence[:, :2, :]  # shape [batch_size, 2, emb_dim]
-    remaining_elements = rsa_sequence[:, 2:, :]  # shape [batch_size, 3*seq_len-2, emb_dim]
+    first_rs = rsa_sequence[:, :2]  # shape [batch_size, 2, emb_dim (or 1 if mask)]
+    remaining_elements = rsa_sequence[:, 2:]  # shape [batch_size, 3*seq_len-2, emb_dim (or 1 if mask)]
     return torch.cat([goal, first_rs, plan, remaining_elements], dim=1)
 
 
@@ -172,7 +175,7 @@ class PlanningDecisionTransformer(DecisionTransformer):
         self.blocks = nn.ModuleList(
             [
                 TransformerBlock(
-                    seq_len=3 * seq_len + num_planning_tokens,  # Adjusted for the planning token
+                    seq_len=3 * seq_len + num_planning_tokens + 1,  # Adjusted for the planning token and goal
                     embedding_dim=embedding_dim,
                     num_heads=num_heads,
                     attention_dropout=attention_dropout,
@@ -191,7 +194,8 @@ class PlanningDecisionTransformer(DecisionTransformer):
         time_emb = self.timestep_emb(time_steps)
 
         device = states.device
-        goal_token = torch.from_numpy(np.pad(goal, ((0, 0), (0, self.embedding_dim - goal.shape[1])), 'constant')).to(device)
+        goal_padded = pad_along_axis(goal.cpu(), self.embedding_dim,axis = -1)
+        goal_token = torch.from_numpy(goal_padded).to(device)
         state_emb = self.state_emb(states) + time_emb
         act_emb = self.action_emb(actions) + time_emb
         returns_emb = self.return_emb(returns_to_go.unsqueeze(-1)) + time_emb
@@ -202,8 +206,7 @@ class PlanningDecisionTransformer(DecisionTransformer):
                 .permute(0, 2, 1, 3)
                 .reshape(batch_size, 3 * seq_len, self.embedding_dim)
         )
-
-        sequence = construct_sequence_with_goal_and_plan(goal, planning_token, sequence)
+        sequence = construct_sequence_with_goal_and_plan(goal_token, planning_token, sequence)
 
         if padding_mask is not None:
             # [batch_size, seq_len * 3], stack mask identically to fit the sequence
@@ -216,11 +219,10 @@ class PlanningDecisionTransformer(DecisionTransformer):
             # True values in the mask mean don't attend to, so we use zeroes so the plan and goal are always attended to
             planning_token_mask = torch.zeros(batch_size, self.num_planning_tokens, dtype=torch.bool,
                                               device=device)
-            goal_mask = torch.zeros(batch_size, goal_token.shape[0], dtype=torch.bool,
+            goal_mask = torch.zeros(batch_size, goal_token.shape[1], dtype=torch.bool,
                                               device=device)
 
             padding_mask = construct_sequence_with_goal_and_plan(goal_mask, planning_token_mask, padding_mask)
-
         # LayerNorm and Dropout (!!!) as in original implementation,
         # while minGPT & huggingface uses only embedding dropout
         out = self.emb_norm(sequence)
@@ -396,7 +398,7 @@ def train(config: TrainConfig):
             first_batch = batch
         if step % config.eval_offline_every:
             batch = first_batch
-        goal, states, actions, returns, planning_tokens, time_steps, mask = [b.to(config.device) for b in batch]
+        goal, states, actions, returns, time_steps, mask, planning_tokens = [b.to(config.device) for b in batch]
         # True value indicates that the corresponding key value will be ignored
         padding_mask = ~mask.to(torch.bool)
 
@@ -417,7 +419,7 @@ def train(config: TrainConfig):
                 image_path=config.bg_image,
                 start= states[0][0][:2],
                 goal=goal,
-                plan_path=[predicted_planning_tokens[0]],
+                plan_paths=[predicted_planning_tokens[0]], # the planning token for the first of the batch
                 ant_path=None,
                 output_folder=f'./paths/PDTv2/{config.env_name}/{config.run_name}/train',
                 index=step
