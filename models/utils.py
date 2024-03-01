@@ -130,7 +130,10 @@ def world_to_image(coords):
     return scale_factor * coords + offset
 
 
-def plot_and_log_paths(image_path, start, goal, plan_paths, ant_path, output_folder, index):
+def plot_and_log_paths(image_path, start, goal, plan_paths, ant_path, output_folder, index, log_to_wandb=True,
+                       save_data=True):
+    # if the output folder doesn't exist make it
+    os.makedirs(output_folder, exist_ok=True)
     # Load the background image
     bg_image = plt.imread(image_path)
 
@@ -141,17 +144,24 @@ def plot_and_log_paths(image_path, start, goal, plan_paths, ant_path, output_fol
     # Convert coordinates
     start_img = world_to_image(np.array(start))
     goal_img = world_to_image(np.array(goal))
-    ant_path_img = np.array([world_to_image(np.array(p)) for p in ant_path])
 
     # Plot plan path with blue line and dots
     for plan_path in plan_paths:
-        plan_path_img = np.array([world_to_image(np.array(p)) for p in plan_path])
-        ax.plot(plan_path_img[:, 0], plan_path_img[:, 1], 'bo-', linewidth=2, markersize=5)
+        if plan_path.shape[0]:
+            plan_path_img = np.array([world_to_image(np.array(p)) for p in plan_path])
+            print(plan_path_img.shape, plan_path)
+            ax.plot(plan_path_img[:, 0], plan_path_img[:, 1], 'bo-', linewidth=2, markersize=5)
 
-    if ant_path:
+    if ant_path is not None:
         # Plot ant path with rainbow line
+        ant_path_img = np.array([world_to_image(np.array(p)) for p in ant_path])
         ax.scatter(ant_path_img[:, 0], ant_path_img[:, 1], c=np.linspace(0, 1, len(ant_path_img)), cmap='rainbow', s=2)
-        ax.plot(ant_path_img[:, 0], ant_path_img[:, 1], c='rainbow', linewidth=2)
+        # To create a gradient line, plot each segment in a loop with colors from the 'rainbow' colormap
+        norm = plt.Normalize(0, 1)
+        cmap = plt.get_cmap('rainbow')
+        for i in range(len(ant_path_img) - 1):
+            plt.plot(ant_path_img[i:i + 2, 0], ant_path_img[i:i + 2, 1], color=cmap(norm(i / (len(ant_path_img) - 2))),
+                     linewidth=2)
 
     # Mark start and goal
     ax.plot(start_img[0], start_img[1], 'go', markersize=10)  # Start in green
@@ -166,11 +176,13 @@ def plot_and_log_paths(image_path, start, goal, plan_paths, ant_path, output_fol
     plt.close()
 
     # Log image to wandb
-    wandb.log({f"path_{index}": wandb.Image(output_path)})
+    if log_to_wandb:
+        wandb.log({f"path_{index}": wandb.Image(output_path)})
 
-    # Pickle the data
-    with open(os.path.join(output_folder, f"path_data_{index}.pkl"), 'wb') as f:
-        pickle.dump({'start': start, 'goal': goal, 'plan_paths': plan_paths, 'ant_path': ant_path}, f)
+    if save_data:
+        # Pickle the data
+        with open(os.path.join(output_folder, f"path_data_{index}.pkl"), 'wb') as f:
+            pickle.dump({'start': start, 'goal': goal, 'plan_paths': plan_paths, 'ant_path': ant_path}, f)
 
 def adjust_path_points(simplified_points, target_points):
     while len(simplified_points) < target_points:

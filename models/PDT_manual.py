@@ -4,8 +4,6 @@ Modified version of the single file implementation of Decision transformer as pr
 
 import warnings
 
-import torch
-
 warnings.filterwarnings('ignore')
 warnings.filterwarnings('ignore', category=DeprecationWarning, module='numpy.*')
 
@@ -105,16 +103,18 @@ class TrainConfig:
         if self.checkpoints_path is not None:
             self.checkpoints_path = os.path.join(self.checkpoints_path, self.name)
 
+
 class SequenceManualPlanDataset(SequenceDataset):
-    def __init__(self, env_name: str, seq_len: int = 10, reward_scale: float = 1.0, path_length=50, num_planning_tokens = 1):
+    def __init__(self, env_name: str, seq_len: int = 10, reward_scale: float = 1.0, path_length=50,
+                 num_planning_tokens=1):
         super().__init__(env_name, seq_len, reward_scale)
         self.path_length = path_length
         self.num_planning_tokens = num_planning_tokens
 
-    def create_plan(self,states):
+    def create_plan(self, states):
         if self.num_planning_tokens:
             positions = states[:2]
-            path = np.array(simplify_path_to_target_points(positions,self.path_length))
+            path = np.array(simplify_path_to_target_points(positions, self.path_length))
             return path
         else:
             return np.empty((0, 64))
@@ -185,7 +185,7 @@ class PlanningDecisionTransformer(DecisionTransformer):
             ]
         )
         self.num_planning_tokens = num_planning_tokens
-        self.planning_head = nn.Sequential(nn.Linear(embedding_dim, action_dim), nn.Tanh())
+        self.planning_head = nn.Sequential(nn.Linear(embedding_dim, embedding_dim), nn.Tanh())
 
     def forward(self, goal, states, actions, returns_to_go, time_steps, planning_token, padding_mask=None,
                 log_attention=False):
@@ -194,7 +194,7 @@ class PlanningDecisionTransformer(DecisionTransformer):
         time_emb = self.timestep_emb(time_steps)
 
         device = states.device
-        goal_padded = pad_along_axis(goal.cpu(), self.embedding_dim,axis = -1)
+        goal_padded = pad_along_axis(goal, self.embedding_dim, axis=-1)
         goal_token = torch.from_numpy(goal_padded).to(device)
         state_emb = self.state_emb(states) + time_emb
         act_emb = self.action_emb(actions) + time_emb
@@ -203,24 +203,25 @@ class PlanningDecisionTransformer(DecisionTransformer):
         # [batch_size, seq_len * 3, emb_dim], (r_0, s_0, a_0, r_1, s_1, a_1, ...)
         sequence = (
             torch.stack([returns_emb, state_emb, act_emb], dim=1)
-                .permute(0, 2, 1, 3)
-                .reshape(batch_size, 3 * seq_len, self.embedding_dim)
+            .permute(0, 2, 1, 3)
+            .reshape(batch_size, 3 * seq_len, self.embedding_dim)
         )
+        # convert to form (goal, r_0, s_0, p_0, p1, ..., p_n, a_0, r_1, s_1, a_1, ...)
         sequence = construct_sequence_with_goal_and_plan(goal_token, planning_token, sequence)
 
         if padding_mask is not None:
             # [batch_size, seq_len * 3], stack mask identically to fit the sequence
             padding_mask = (
                 torch.stack([padding_mask, padding_mask, padding_mask], dim=1)
-                    .permute(0, 2, 1)
-                    .reshape(batch_size, 3 * seq_len)
+                .permute(0, 2, 1)
+                .reshape(batch_size, 3 * seq_len)
             )
             # account for the planning token in the mask
             # True values in the mask mean don't attend to, so we use zeroes so the plan and goal are always attended to
             planning_token_mask = torch.zeros(batch_size, self.num_planning_tokens, dtype=torch.bool,
                                               device=device)
             goal_mask = torch.zeros(batch_size, goal_token.shape[1], dtype=torch.bool,
-                                              device=device)
+                                    device=device)
 
             padding_mask = construct_sequence_with_goal_and_plan(goal_mask, planning_token_mask, padding_mask)
         # LayerNorm and Dropout (!!!) as in original implementation,
@@ -238,8 +239,9 @@ class PlanningDecisionTransformer(DecisionTransformer):
         # [batch_size, seq_len, action_dim]
         # predict actions only from state embeddings
         out_planning_tokens = self.planning_head(out[:, 1:self.num_planning_tokens + 1])
-        out_actions = self.action_head(
-            out[:, (1 + self.num_planning_tokens)::3]) * self.max_action  # The "+ 1" accounts for the planning token
+
+        states = torch.cat([out[:, 2:3], out[:, (5 + self.num_planning_tokens)::3]], dim=1)
+        out_actions = self.action_head(states) * self.max_action
 
         return out_planning_tokens, out_actions, attention_maps
 
@@ -268,15 +270,18 @@ def eval_rollout(
     render_frames = []
     pt_frames = []
     planning_tokens = None
-    plan_path = []
+    plan_paths = []
+    goal = np.array(env.target_goal, dtype=np.float32)[np.newaxis, np.newaxis, :]
+
     for step in range(pdt_model.episode_len):
         # Generate the planning token every 20 steps (partial replanning)
         if step % 20 == 0:
-            planning_tokens = torch.zeros(1, num_planning_tokens, pdt_model.state_dim, dtype=torch.float, device=device)
+            planning_tokens = torch.zeros(1, num_planning_tokens, pdt_model.embedding_dim, dtype=torch.float,
+                                          device=device)
             # plan tokens are generated via an autoregressive generation loop just like is done in NLP generation tasks
             for plan_token_i in range(num_planning_tokens):
                 pred_planning_tokens, _, _ = pdt_model(
-                    env.target_goal,
+                    goal,
                     states[:, -1:],
                     torch.zeros(1, 1, pdt_model.action_dim, dtype=torch.float, device=device),
                     returns[:, -1:],
@@ -286,16 +291,16 @@ def eval_rollout(
                 )
                 planning_tokens[:, plan_token_i] = pred_planning_tokens[0, -1]
 
-            plan_path.append(planning_tokens[0].cpu())
-            pt_frame = log_tensor_as_image(plan_path[-1].view(-1), f"planning_token_ep_{ep_id}",
-                                           log_to_wandb=False)
-            pt_frames.append(pt_frame)
-
+            if num_planning_tokens:
+                plan_paths.append(planning_tokens[0].cpu())
+                pt_frame = log_tensor_as_image(plan_paths[-1].view(-1), f"planning_token_ep_{ep_id}",
+                                               log_to_wandb=False)
+                pt_frames.append(pt_frame)
 
         if ep_id < 3:
             render_frames.append(env.render(mode="rgb_array"))
-
         _, predicted_actions, attention_maps = pdt_model(
+            goal,
             states[:, : step + 1][:, -pdt_model.seq_len:],
             actions[:, : step + 1][:, -pdt_model.seq_len:],
             returns[:, : step + 1][:, -pdt_model.seq_len:],
@@ -319,7 +324,7 @@ def eval_rollout(
         if done:
             break
     ant_path = states[0, :, :2].cpu().numpy()
-    return episode_return, episode_len, attention_map_frames, render_frames, pt_frames, plan_path, ant_path
+    return episode_return, episode_len, attention_map_frames, render_frames, pt_frames, plan_paths, ant_path
 
 
 @pyrallis.wrap()
@@ -396,9 +401,10 @@ def train(config: TrainConfig):
         batch = next(trainloader_iter)
         if step == 0:
             first_batch = batch
-        if step % config.eval_offline_every:
+        if step % config.eval_offline_every == 0:
             batch = first_batch
-        goal, states, actions, returns, time_steps, mask, planning_tokens = [b.to(config.device) for b in batch]
+        goal = batch[0]
+        states, actions, returns, time_steps, mask, planning_tokens = [b.to(config.device) for b in batch[1:]]
         # True value indicates that the corresponding key value will be ignored
         padding_mask = ~mask.to(torch.bool)
 
@@ -417,17 +423,19 @@ def train(config: TrainConfig):
         if step % config.eval_offline_every == 0:
             plot_and_log_paths(
                 image_path=config.bg_image,
-                start= states[0][0][:2],
-                goal=goal,
-                plan_paths=[predicted_planning_tokens[0]], # the planning token for the first of the batch
+                start=states[0][0][:2].cpu(),
+                goal=goal.cpu(),
+                plan_paths=[predicted_planning_tokens[0]],  # the planning token for the first of the batch
                 ant_path=None,
                 output_folder=f'./paths/PDTv2/{config.env_name}/{config.run_name}/train',
-                index=step
+                index=step,
+                log_to_wandb=False
             )
+
         plan_loss = F.mse_loss(predicted_planning_tokens, planning_tokens.detach(), reduction="mean")
         action_loss = F.mse_loss(predicted_actions, actions.detach(), reduction="none")
         action_loss = (action_loss * mask.unsqueeze(-1)).mean()
-        combined_loss = 0.5 * action_loss + 0.5 * plan_loss
+        combined_loss = 0.5 * action_loss + 0.5 * plan_loss if config.num_planning_tokens else action_loss
         # Backpropagation and optimization for main model
 
         optim.zero_grad()
@@ -455,18 +463,23 @@ def train(config: TrainConfig):
             step=step,
         )
 
-
         # validation in the env for the actual online performance
         #  and step != 0
-        if (step % config.eval_every == 0) or (step % config.eval_path_plot_every == 0) or step == config.update_steps - 1:
+        if (step % config.eval_every == 0) or (
+                step % config.eval_path_plot_every == 0) or step == config.update_steps - 1:
+            if step % config.eval_path_plot_every == 0 and step % config.eval_every != 0:
+                num_episodes = 1
+            else:
+                num_episodes = config.eval_episodes
+
             pdt_model.eval()
             for target_return in config.target_returns:
                 eval_env.seed(config.eval_seed)
                 eval_returns = []
-                for ep_id in trange(config.eval_episodes, desc="Evaluation", leave=False):
+                for ep_id in trange(num_episodes, desc="Evaluation", leave=False):
                     video_folder = f'./video/PDTv2/{config.env_name}/{config.run_name}/episode-{ep_id}'
-
-                    eval_return, eval_len, attention_frames, render_frames, pt_frames, plan_path, ant_path = eval_rollout(
+                    goal = eval_env.target_goal
+                    eval_return, eval_len, attention_frames, render_frames, pt_frames, plan_paths, ant_path = eval_rollout(
                         pdt_model=pdt_model,
                         env=eval_env,
                         target_return=target_return * config.reward_scale,
@@ -478,22 +491,23 @@ def train(config: TrainConfig):
                         os.makedirs(video_folder, exist_ok=True)
                         arrays_to_video(attention_frames, f'{video_folder}/attention_t={step}.mp4', scale_factor=5)
                         arrays_to_video(render_frames, f'{video_folder}/render_t={step}.mp4', scale_factor=1)
-                        arrays_to_video(pt_frames, f'{video_folder}/planning-token_t={step}.mp4', scale_factor=1, fps=1)
+                        if config.num_planning_tokens:
+                            arrays_to_video(pt_frames, f'{video_folder}/planning-token_t={step}.mp4', scale_factor=1,
+                                            fps=1)
                     # unscale for logging & correct normalized score computation
                     eval_returns.append(eval_return / config.reward_scale)
 
-                    if not step % config.eval_every == 0 and ep_id ==0:
+                    if ep_id == 0:
                         plot_and_log_paths(
                             image_path=config.bg_image,
-                            start=states[0][0][:2],
+                            start=ant_path[0],
                             goal=goal,
-                            plan_path=plan_path,
+                            plan_paths=plan_paths,
                             ant_path=ant_path,
                             output_folder=f'./paths/PDTv2/{config.env_name}/{config.run_name}/eval',
-                            index=step
+                            index=step,
+                            log_to_wandb=False
                         )
-                        break
-
 
                 normalized_scores = (
                         eval_env.get_normalized_score(np.array(eval_returns)) * 100
