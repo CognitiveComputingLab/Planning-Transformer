@@ -131,20 +131,30 @@ def normalize_state(state, state_mean, state_std):
 def scale_reward(reward, reward_scale):
     return reward_scale * reward
 
-def target_goal_wrapper
+
+class TransformTarget(gym.Wrapper):
+    def __init__(self, env, f):
+        super().__init__(env)
+        assert callable(f)
+        self.f = f
+
+    @property
+    def target_goal(self):
+        return self.f(self.env.target_goal)
+
 def wrap_env(
         env: gym.Env,
         state_mean: Union[np.ndarray, float] = 0.0,
         state_std: Union[np.ndarray, float] = 1.0,
         reward_scale: float = 1.0,
-        normalize_target: bool = False
+        normalize_target: bool = False,
 ) -> gym.Env:
     env = gym.wrappers.TransformObservation(env, partial(normalize_state, state_mean=state_mean, state_std=state_std))
     if reward_scale != 1.0:
         env = gym.wrappers.TransformReward(env, partial(scale_reward, reward_scale=reward_scale))
-    if wrap_target:
+    if normalize_target:
+        env = TransformTarget(env, partial(normalize_state, state_mean=state_mean[:2], state_std=state_std))
     return env
-
 
 # some utils functionalities specific for Decision Transformer
 def pad_along_axis(
