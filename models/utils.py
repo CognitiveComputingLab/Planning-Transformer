@@ -123,13 +123,6 @@ def arrays_to_video(arrays, output_file, scale_factor=1.0, fps=30.0):
     # Release everything when job is finished
     out.release()
 
-
-def world_to_image(coords):
-    scale_factor = 5
-    offset = np.array([44, 21])
-    return scale_factor * coords + offset
-
-
 def plot_and_log_paths(image_path, start, goal, plan_paths, ant_path, output_folder, index, log_to_wandb=True,
                        save_data=True):
     # if the output folder doesn't exist make it
@@ -139,33 +132,30 @@ def plot_and_log_paths(image_path, start, goal, plan_paths, ant_path, output_fol
 
     # Create figure and axes
     fig, ax = plt.subplots()
-    ax.imshow(bg_image)
+    ax.imshow(bg_image,extent=(-2,2, -2, 2))
 
-    # Convert coordinates
-    start_img = world_to_image(np.array(start))
-    goal_img = world_to_image(np.array(goal))
+    goal= np.array(goal)/8
+    print(goal/8)
 
     # Plot plan path with blue line and dots
     for plan_path in plan_paths:
         if plan_path.shape[0]:
-            plan_path_img = np.array([world_to_image(np.array(p)) for p in plan_path])
-            print(plan_path_img.shape, plan_path)
-            ax.plot(plan_path_img[:, 0], plan_path_img[:, 1], 'bo-', linewidth=2, markersize=5)
+            print(plan_path.shape, plan_path)
+            ax.plot(plan_path[:, 0], plan_path[:, 1], 'bo-', linewidth=2, markersize=5)
 
     if ant_path is not None:
         # Plot ant path with rainbow line
-        ant_path_img = np.array([world_to_image(np.array(p)) for p in ant_path])
-        ax.scatter(ant_path_img[:, 0], ant_path_img[:, 1], c=np.linspace(0, 1, len(ant_path_img)), cmap='rainbow', s=2)
+        ax.scatter(ant_path[:, 0], ant_path[:, 1], c=np.linspace(0, 1, len(ant_path)), cmap='rainbow', s=2)
         # To create a gradient line, plot each segment in a loop with colors from the 'rainbow' colormap
         norm = plt.Normalize(0, 1)
         cmap = plt.get_cmap('rainbow')
-        for i in range(len(ant_path_img) - 1):
-            plt.plot(ant_path_img[i:i + 2, 0], ant_path_img[i:i + 2, 1], color=cmap(norm(i / (len(ant_path_img) - 2))),
+        for i in range(len(ant_path) - 1):
+            plt.plot(ant_path[i:i + 2, 0], ant_path[i:i + 2, 1], color=cmap(norm(i / (len(ant_path) - 2))),
                      linewidth=2)
 
     # Mark start and goal
-    ax.plot(start_img[0], start_img[1], 'go', markersize=10)  # Start in green
-    ax.scatter(goal_img[0], goal_img[1], s=100, c='silver', marker='*', zorder=5)  # Goal in silver
+    ax.plot(start[0], start[1], 'go', markersize=10)  # Start in green
+    ax.scatter(goal[0], goal[1], s=100, c='silver', marker='*', zorder=5)  # Goal in silver
 
     # Remove axes for better visualization
     ax.axis('off')
