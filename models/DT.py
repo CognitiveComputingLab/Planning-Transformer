@@ -19,9 +19,11 @@ import torch.nn as nn
 from torch.nn import functional as F
 from torch.utils.data import DataLoader, IterableDataset
 from tqdm.auto import trange
+from gym.utils import seeding
+from gym.envs.mujoco import mujoco_env
 
 import wandb
-from .utils import log_attention_maps
+from utils import log_attention_maps
 
 
 @dataclass
@@ -103,14 +105,18 @@ class TrainConfig:
 def set_seed(
         seed: int, env: Optional[gym.Env] = None, deterministic_torch: bool = False
 ):
-    if env is not None:
-        env.seed(seed)
-        env.action_space.seed(seed)
     os.environ["PYTHONHASHSEED"] = str(seed)
     np.random.seed(seed)
     random.seed(seed)
     torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
     torch.use_deterministic_algorithms(deterministic_torch)
+
+    if env is not None:
+        # env.np_random, seed = seeding.np_random(seed)
+        env.seed(seed)
+        env.action_space.seed(seed)
 
 
 def wandb_init(config: dict) -> None:
@@ -153,7 +159,7 @@ def wrap_env(
     if reward_scale != 1.0:
         env = gym.wrappers.TransformReward(env, partial(scale_reward, reward_scale=reward_scale))
     if normalize_target:
-        env = TransformTarget(env, partial(normalize_state, state_mean=state_mean[:2], state_std=state_std))
+        env = TransformTarget(env, partial(normalize_state, state_mean=state_mean[0][:2], state_std=state_std[0][:2]))
     return env
 
 # some utils functionalities specific for Decision Transformer

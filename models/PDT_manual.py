@@ -106,10 +106,11 @@ class TrainConfig:
 
 class SequenceManualPlanDataset(SequenceDataset):
     def __init__(self, env_name: str, seq_len: int = 10, reward_scale: float = 1.0, path_length=50,
-                 num_planning_tokens=1):
+                 num_planning_tokens: int=1, embedding_dim: int = 128):
         super().__init__(env_name, seq_len, reward_scale)
         self.path_length = path_length
         self.num_planning_tokens = num_planning_tokens
+        self.embedding_dim = embedding_dim
 
     def create_plan(self, states):
         if self.num_planning_tokens:
@@ -117,7 +118,7 @@ class SequenceManualPlanDataset(SequenceDataset):
             path = np.array(simplify_path_to_target_points(positions, self.path_length))
             return path
         else:
-            return np.empty((0, 64))
+            return np.empty((0, self.embedding_dim))
 
     def _prepare_sample(self, traj_idx, start_idx):
         traj = self.dataset[traj_idx]
@@ -128,10 +129,10 @@ class SequenceManualPlanDataset(SequenceDataset):
         returns = traj["returns"][start_idx: start_idx + self.seq_len]
         time_steps = np.arange(start_idx, start_idx + self.seq_len)
 
-        plan = self.create_plan(states).astype(np.float32)
-
         states = (states - self.state_mean) / self.state_std
+        goal = (goal -self.state_mean[0][:2])/self.state_std[0][:2]
         returns = returns * self.reward_scale
+        plan = self.create_plan(states).astype(np.float32)
         # pad up to seq_len if needed, padding is masked during training
         mask = np.hstack(
             [np.ones(states.shape[0]), np.zeros(self.seq_len - states.shape[0])]
@@ -255,7 +256,7 @@ def eval_rollout(
         num_planning_tokens: int,
         device: str = "gpu",
         ep_id=0,
-) -> Tuple[float, float, list, list, list, list, np.ndarray]:
+) -> Tuple[float, float, list, list, list, list, np.ndarray, tuple]:
     states = torch.zeros(1, pdt_model.episode_len + 1, pdt_model.state_dim, dtype=torch.float, device=device)
     actions = torch.zeros(1, pdt_model.episode_len, pdt_model.action_dim, dtype=torch.float, device=device)
     returns = torch.zeros(1, pdt_model.episode_len + 1, dtype=torch.float, device=device)
@@ -263,6 +264,7 @@ def eval_rollout(
     time_steps = time_steps.view(1, -1)
 
     states[:, 0] = torch.as_tensor(env.reset(), device=device)
+    print("START: ", states[0, 0][:3])
     returns[:, 0] = torch.as_tensor(target_return, device=device)
 
     episode_return, episode_len = 0.0, 0.0
@@ -271,7 +273,9 @@ def eval_rollout(
     pt_frames = []
     planning_tokens = None
     plan_paths = []
-    goal = np.array(env.target_goal, dtype=np.float32)[np.newaxis, np.newaxis, :]
+    goal_unmodified = env.target_goal
+    print(goal_unmodified)
+    goal = np.array(goal_unmodified, dtype=np.float32)[np.newaxis, np.newaxis, :]
 
     for step in range(pdt_model.episode_len):
         # Generate the planning token every 20 steps (partial replanning)
@@ -310,6 +314,8 @@ def eval_rollout(
         )
         predicted_action = predicted_actions[0, -1].cpu().numpy()
         next_state, reward, done, info = env.step(predicted_action)
+        if not np.all(env.target_goal == goal_unmodified):
+            print(f"goal changed at step: {step} !")
 
         actions[:, step] = torch.as_tensor(predicted_action)
         states[:, step + 1] = torch.as_tensor(next_state)
@@ -324,13 +330,13 @@ def eval_rollout(
         if done:
             break
     ant_path = states[0, :, :2].cpu().numpy()
-    return episode_return, episode_len, attention_map_frames, render_frames, pt_frames, plan_paths, ant_path
+    return episode_return, episode_len, attention_map_frames, render_frames, pt_frames, plan_paths, ant_path, \
+        goal_unmodified
 
 
 @pyrallis.wrap()
 def train(config: TrainConfig):
     num_cores = os.sysconf("SC_NPROCESSORS_ONLN")
-
     set_seed(config.train_seed, deterministic_torch=config.deterministic_torch)
     # init wandb session for logging
     wandb_init(asdict(config))
@@ -341,7 +347,8 @@ def train(config: TrainConfig):
         seq_len=config.seq_len,
         reward_scale=config.reward_scale,
         path_length=config.embedding_dim,
-        num_planning_tokens=config.num_planning_tokens
+        num_planning_tokens=config.num_planning_tokens,
+        embedding_dim=config.embedding_dim
     )
     trainloader = DataLoader(
         dataset,
@@ -355,6 +362,7 @@ def train(config: TrainConfig):
         state_mean=dataset.state_mean,
         state_std=dataset.state_std,
         reward_scale=config.reward_scale,
+        normalize_target=True
     )
     # DT model & optimizer & scheduler setup
     config.state_dim = eval_env.observation_space.shape[0]
@@ -420,16 +428,18 @@ def train(config: TrainConfig):
             log_attention=False
         )
 
-        if step % config.eval_offline_every == 0:
+        if step % config.eval_offline_every == 0 and config.num_planning_tokens:
             plot_and_log_paths(
                 image_path=config.bg_image,
                 start=states[0][0][:2].cpu(),
                 goal=goal.cpu(),
                 plan_paths=[predicted_planning_tokens[0]],  # the planning token for the first of the batch
                 ant_path=None,
-                output_folder=f'./paths/PDTv2/{config.env_name}/{config.run_name}/train',
+                output_folder=f'./visualisations/PDTv2/{config.env_name}/{config.run_name}/train',
                 index=step,
-                log_to_wandb=False
+                log_to_wandb=False,
+                pos_mean=dataset.state_mean[0][:2],
+                pos_std=dataset.state_std[0][:2]
             )
 
         plan_loss = F.mse_loss(predicted_planning_tokens, planning_tokens.detach(), reduction="mean")
@@ -471,15 +481,17 @@ def train(config: TrainConfig):
                 num_episodes = 1
             else:
                 num_episodes = config.eval_episodes
-
             pdt_model.eval()
             for target_return in config.target_returns:
-                eval_env.seed(config.eval_seed)
+                if config.eval_seed != -1:
+                    eval_env.seed(config.eval_seed)
+                    np.random.seed(config.eval_seed)
                 eval_returns = []
                 for ep_id in trange(num_episodes, desc="Evaluation", leave=False):
-                    video_folder = f'./video/PDTv2/{config.env_name}/{config.run_name}/episode-{ep_id}'
-                    goal = eval_env.target_goal
-                    eval_return, eval_len, attention_frames, render_frames, pt_frames, plan_paths, ant_path = eval_rollout(
+                    if config.eval_seed == -1:
+                        set_seed(range(config.eval_episodes)[ep_id] * 2,eval_env, deterministic_torch=False)
+                    video_folder = f'./visualisations/PDTv2/{config.env_name}/{config.run_name}'
+                    eval_return, eval_len, attention_frames, render_frames, pt_frames, plan_paths, ant_path, goal = eval_rollout(
                         pdt_model=pdt_model,
                         env=eval_env,
                         target_return=target_return * config.reward_scale,
@@ -489,43 +501,45 @@ def train(config: TrainConfig):
                     )
                     if ep_id < 3:
                         os.makedirs(video_folder, exist_ok=True)
-                        arrays_to_video(attention_frames, f'{video_folder}/attention_t={step}.mp4', scale_factor=5)
-                        arrays_to_video(render_frames, f'{video_folder}/render_t={step}.mp4', scale_factor=1)
+                        arrays_to_video(attention_frames, f'{video_folder}/attention_t={step}-ep={ep_id}.mp4', scale_factor=5)
+                        arrays_to_video(render_frames, f'{video_folder}/render_t={step}-ep={ep_id}.mp4', scale_factor=1)
                         if config.num_planning_tokens:
-                            arrays_to_video(pt_frames, f'{video_folder}/planning-token_t={step}.mp4', scale_factor=1,
+                            arrays_to_video(pt_frames, f'{video_folder}/planning-token_t={step}-ep={ep_id}.mp4', scale_factor=1,
                                             fps=1)
                     # unscale for logging & correct normalized score computation
                     eval_returns.append(eval_return / config.reward_scale)
 
-                    if ep_id == 0:
-                        plot_and_log_paths(
-                            image_path=config.bg_image,
-                            start=ant_path[0],
-                            goal=goal,
-                            plan_paths=plan_paths,
-                            ant_path=ant_path,
-                            output_folder=f'./paths/PDTv2/{config.env_name}/{config.run_name}/eval',
-                            index=step,
-                            log_to_wandb=False
-                        )
+                    plot_and_log_paths(
+                        image_path=config.bg_image,
+                        start=ant_path[0],
+                        goal=goal,
+                        plan_paths=plan_paths,
+                        ant_path=ant_path,
+                        output_folder=video_folder,
+                        index=f"t={step}-ep={ep_id}",
+                        log_to_wandb=False,
+                        pos_mean=dataset.state_mean[0][:2],
+                        pos_std=dataset.state_std[0][:2]
+                    )
 
                 normalized_scores = (
                         eval_env.get_normalized_score(np.array(eval_returns)) * 100
                 )
                 print(f"eval/{target_return}_return_mean", np.mean(eval_returns))
-                wandb.log(
-                    {
-                        f"eval/{target_return}_return_mean": np.mean(eval_returns),
-                        f"eval/{target_return}_return_std": np.std(eval_returns),
-                        f"eval/{target_return}_normalized_score_mean": np.mean(
-                            normalized_scores
-                        ),
-                        f"eval/{target_return}_normalized_score_std": np.std(
-                            normalized_scores
-                        ),
-                    },
-                    step=step,
-                )
+                if num_episodes == config.eval_episodes:
+                    wandb.log(
+                        {
+                            f"eval/{target_return}_return_mean": np.mean(eval_returns),
+                            f"eval/{target_return}_return_std": np.std(eval_returns),
+                            f"eval/{target_return}_normalized_score_mean": np.mean(
+                                normalized_scores
+                            ),
+                            f"eval/{target_return}_normalized_score_std": np.std(
+                                normalized_scores
+                            ),
+                        },
+                        step=step,
+                    )
             pdt_model.train()
 
         if config.checkpoints_path is not None:

@@ -123,8 +123,10 @@ def arrays_to_video(arrays, output_file, scale_factor=1.0, fps=30.0):
     # Release everything when job is finished
     out.release()
 
-def plot_and_log_paths(image_path, start, goal, plan_paths, ant_path, output_folder, index, log_to_wandb=True,
-                       save_data=True):
+def normalise_maze_coords(X,mean,std):
+    return (np.array(X)-mean)/std
+def plot_and_log_paths(image_path, start, goal, plan_paths, ant_path, output_folder, index, pos_mean, pos_std,
+                       log_to_wandb=True, save_data=True):
     # if the output folder doesn't exist make it
     os.makedirs(output_folder, exist_ok=True)
     # Load the background image
@@ -132,15 +134,16 @@ def plot_and_log_paths(image_path, start, goal, plan_paths, ant_path, output_fol
 
     # Create figure and axes
     fig, ax = plt.subplots()
-    ax.imshow(bg_image,extent=(-2,2, -2, 2))
+    tl, br = normalise_maze_coords([[-6,-6], [26,26]],pos_mean, pos_std)
+    ax.imshow(bg_image,extent=(tl[0],br[0],tl[1], br[1]))
 
-    goal= np.array(goal)/8
-    print(goal/8)
+    goal= np.array(goal)
+    # print(goal/8)
 
     # Plot plan path with blue line and dots
     for plan_path in plan_paths:
         if plan_path.shape[0]:
-            print(plan_path.shape, plan_path)
+            # print(plan_path.shape, plan_path)
             ax.plot(plan_path[:, 0], plan_path[:, 1], 'bo-', linewidth=2, markersize=5)
 
     if ant_path is not None:
@@ -172,7 +175,9 @@ def plot_and_log_paths(image_path, start, goal, plan_paths, ant_path, output_fol
     if save_data:
         # Pickle the data
         with open(os.path.join(output_folder, f"path_data_{index}.pkl"), 'wb') as f:
-            pickle.dump({'start': start, 'goal': goal, 'plan_paths': plan_paths, 'ant_path': ant_path}, f)
+            pickle.dump(
+                {'start': start, 'goal': goal, 'plan_paths': plan_paths, 'ant_path': ant_path, 'mean': pos_mean,
+                 'std': pos_std}, f)
 
 def adjust_path_points(simplified_points, target_points):
     while len(simplified_points) < target_points:

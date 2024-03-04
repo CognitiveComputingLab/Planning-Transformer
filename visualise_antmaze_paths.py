@@ -20,7 +20,9 @@ def main(directory):
             output_folder = directory,
             index=path_data_file.split('path_data_')[1].split('.pkl')[0],
             log_to_wandb=False,
-            save_data=False
+            save_data=False,
+            pos_mean=data['mean'],
+            pos_std=data['std']
         )
 
 if __name__ == "__main__":
