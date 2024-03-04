@@ -10,7 +10,7 @@ warnings.filterwarnings('ignore', category=DeprecationWarning, module='numpy.*')
 import os
 
 os.environ['D4RL_SUPPRESS_IMPORT_ERROR'] = '1'
-os.environ["WANDB_SILENT"] = "false"
+os.environ["WANDB_SILENT"] = "true"
 
 # Modify PDT forward pass to generate planning tokens which use embedded dim and thus are the same size and able to be
 # concatenated
@@ -194,12 +194,17 @@ class PlanningDecisionTransformer(DecisionTransformer):
         # [batch_size, seq_len, emb_dim]
         time_emb = self.timestep_emb(time_steps)
 
-        device = states.device
-        goal_padded = pad_along_axis(goal, self.embedding_dim, axis=-1)
-        goal_token = torch.from_numpy(goal_padded).to(device)
-        state_emb = self.state_emb(states) + time_emb
+        state_emb_no_time_emb = self.state_emb(states)
+        state_emb = state_emb_no_time_emb + time_emb
         act_emb = self.action_emb(actions) + time_emb
         returns_emb = self.return_emb(returns_to_go.unsqueeze(-1)) + time_emb
+
+        # handle goal
+        # we do this inserting the goal into the state, embedding it then subtracting the state embedding
+        # we detatch the state embedding to prevent co-dependency during backprop
+        device = states.device
+        goal_modified_state_0 = torch.cat((goal, states[:, 0:1, 2:].clone().detach()), dim=-1)
+        goal_token = (self.state_emb(goal_modified_state_0) -state_emb_no_time_emb[:, 0:1, :]).detach()
 
         # [batch_size, seq_len * 3, emb_dim], (r_0, s_0, a_0, r_1, s_1, a_1, ...)
         sequence = (
@@ -221,7 +226,7 @@ class PlanningDecisionTransformer(DecisionTransformer):
             # True values in the mask mean don't attend to, so we use zeroes so the plan and goal are always attended to
             planning_token_mask = torch.zeros(batch_size, self.num_planning_tokens, dtype=torch.bool,
                                               device=device)
-            goal_mask = torch.zeros(batch_size, goal_token.shape[1], dtype=torch.bool,
+            goal_mask = torch.zeros(batch_size, 1, dtype=torch.bool,
                                     device=device)
 
             padding_mask = construct_sequence_with_goal_and_plan(goal_mask, planning_token_mask, padding_mask)
@@ -275,7 +280,7 @@ def eval_rollout(
     plan_paths = []
     goal_unmodified = env.target_goal
     print(goal_unmodified)
-    goal = np.array(goal_unmodified, dtype=np.float32)[np.newaxis, np.newaxis, :]
+    goal =  torch.tensor(goal_unmodified, dtype=torch.float32, device=device).unsqueeze(0).unsqueeze(0)
 
     for step in range(pdt_model.episode_len):
         # Generate the planning token every 20 steps (partial replanning)
@@ -411,8 +416,7 @@ def train(config: TrainConfig):
             first_batch = batch
         if step % config.eval_offline_every == 0:
             batch = first_batch
-        goal = batch[0]
-        states, actions, returns, time_steps, mask, planning_tokens = [b.to(config.device) for b in batch[1:]]
+        goal, states, actions, returns, time_steps, mask, planning_tokens = [b.to(config.device) for b in batch]
         # True value indicates that the corresponding key value will be ignored
         padding_mask = ~mask.to(torch.bool)
 
