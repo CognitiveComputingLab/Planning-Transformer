@@ -90,7 +90,7 @@ class TrainConfig:
     log_attn_every: int = 100
 
     # Options for planning tokens
-    num_planning_tokens: int = 1
+    plan_length: int = 1
     num_plan_points: int=25
 
     # video
@@ -108,16 +108,17 @@ class TrainConfig:
 
 class SequenceManualPlanDataset(SequenceDataset):
     def __init__(self, env_name: str, seq_len: int = 10, reward_scale: float = 1.0, path_length=50,
-                 num_planning_tokens: int = 1, embedding_dim: int = 128):
+                 plan_length: int = 1, embedding_dim: int = 128):
         super().__init__(env_name, seq_len, reward_scale)
         self.path_length = path_length
-        self.num_planning_tokens = num_planning_tokens
+        self.plan_length = plan_length
         self.embedding_dim = embedding_dim
 
     def create_plan(self, states):
-        if self.num_planning_tokens:
-            positions = states[:, 2]
+        if self.plan_length:
+            positions = states[:, :2]
             path = np.array(simplify_path_to_target_points(positions, self.path_length))[np.newaxis, :]
+            path = pad_along_axis(path, pad_to=self.path_length, axis=1).reshape(-1, self.path_length*2)
             return path
         else:
             return np.empty((0, self.embedding_dim))
@@ -164,7 +165,7 @@ class PlanningDecisionTransformer(DecisionTransformer):
                  num_heads: int = 8,
                  attention_dropout: float = 0.0,
                  residual_dropout: float = 0.0,
-                 num_planning_tokens: int = 1,
+                 plan_length: int = 1,
                  **kwargs
                  ):
         super().__init__(state_dim, action_dim,
@@ -179,7 +180,7 @@ class PlanningDecisionTransformer(DecisionTransformer):
         self.blocks = nn.ModuleList(
             [
                 TransformerBlock(
-                    seq_len=3 * seq_len + num_planning_tokens + 1,  # Adjusted for the planning token and goal
+                    seq_len=3 * seq_len + plan_length + 1,  # Adjusted for the planning token and goal
                     embedding_dim=embedding_dim,
                     num_heads=num_heads,
                     attention_dropout=attention_dropout,
@@ -188,10 +189,10 @@ class PlanningDecisionTransformer(DecisionTransformer):
                 for _ in range(num_layers)
             ]
         )
-        self.plan_length = num_planning_tokens
+        self.plan_length = plan_length
         self.planning_head = nn.Sequential(nn.Linear(embedding_dim, embedding_dim), nn.Tanh())
         self.plan_emb = nn.Linear(plan_dim, embedding_dim)
-        self.plan_positional_emb = nn.Embedding(num_planning_tokens, embedding_dim)
+        self.plan_positional_emb = nn.Embedding(plan_length, embedding_dim)
 
         # Create position IDs for plan once
         self.register_buffer('plan_position_ids', torch.arange(0, self.plan_length).unsqueeze(0))
@@ -234,12 +235,12 @@ class PlanningDecisionTransformer(DecisionTransformer):
             )
             # account for the planning token in the mask
             # True values in the mask mean don't attend to, so we use zeroes so the plan and goal are always attended to
-            planning_token_mask = torch.zeros(batch_size, self.plan_length, dtype=torch.bool,
+            plan_mask = torch.zeros(batch_size, self.plan_length, dtype=torch.bool,
                                               device=device)
             goal_mask = torch.zeros(batch_size, 1, dtype=torch.bool,
                                     device=device)
 
-            padding_mask = construct_sequence_with_goal_and_plan(goal_mask, planning_token_mask, padding_mask)
+            padding_mask = construct_sequence_with_goal_and_plan(goal_mask, plan_mask, padding_mask)
         # LayerNorm and Dropout (!!!) as in original implementation,
         # while minGPT & huggingface uses only embedding dropout
         out = self.emb_norm(sequence)
@@ -254,13 +255,13 @@ class PlanningDecisionTransformer(DecisionTransformer):
         out = self.out_norm(out)
 
         # for input to the planning_head we use the sequence shiftted one to the left of the plan_sequence
-        out_planning_tokens = self.planning_head(out[:, 2 : 2 + self.plan_length])
+        out_plan = self.planning_head(out[:, 2 : 2 + self.plan_length])
 
         # predict actions only from state embeddings
         states = torch.cat([out[:, 2:3], out[:, (5 + self.plan_length)::3]], dim=1)
         out_actions = self.action_head(states) * self.max_action # [batch_size, seq_len, action_dim]
 
-        return out_planning_tokens, out_actions, attention_maps
+        return out_plan, out_actions, attention_maps
 
 
 # Training and evaluation logic
@@ -269,7 +270,7 @@ def eval_rollout(
         pdt_model: PlanningDecisionTransformer,
         env: gym.Env,
         target_return: float,
-        num_planning_tokens: int,
+        plan_length: int,
         device: str = "gpu",
         ep_id=0,
 ) -> Tuple[float, float, list, list, list, list, np.ndarray, tuple]:
@@ -287,7 +288,7 @@ def eval_rollout(
     attention_map_frames = []
     render_frames = []
     pt_frames = []
-    planning_tokens = None
+    plan = None
     plan_paths = []
     goal_unmodified = env.target_goal
     print(goal_unmodified)
@@ -296,24 +297,24 @@ def eval_rollout(
     for step in range(pdt_model.episode_len):
         # Generate the planning token every 20 steps (partial replanning)
         if step % 20 == 0:
-            planning_tokens = torch.zeros(1, num_planning_tokens, pdt_model.embedding_dim, dtype=torch.float,
+            plan = torch.zeros(1, plan_length, pdt_model.embedding_dim, dtype=torch.float,
                                           device=device)
             # plan tokens are generated via an autoregressive generation loop just like is done in NLP generation tasks
-            for plan_token_i in range(num_planning_tokens):
-                pred_planning_tokens, _, _ = pdt_model(
+            for plan_token_i in range(plan_length):
+                pred_plan, _, _ = pdt_model(
                     goal,
                     states[:, -1:],
                     torch.zeros(1, 1, pdt_model.action_dim, dtype=torch.float, device=device),
                     returns[:, -1:],
                     time_steps[:, -1:],
-                    planning_token=planning_tokens[:, :plan_token_i],
+                    plan=plan[:, :plan_token_i],
                     log_attention=False
                 )
-                planning_tokens[:, plan_token_i] = pred_planning_tokens[0, -1]
+                plan[:, plan_token_i] = pred_plan[0, -1]
 
-            if num_planning_tokens:
-                plan_paths.append(planning_tokens[0].cpu())
-                pt_frame = log_tensor_as_image(plan_paths[-1].view(-1), f"planning_token_ep_{ep_id}",
+            if plan_length:
+                plan_paths.append(plan[0].cpu())
+                pt_frame = log_tensor_as_image(plan_paths[-1].view(-1), f"plan_ep_{ep_id}",
                                                log_to_wandb=False)
                 pt_frames.append(pt_frame)
 
@@ -325,7 +326,7 @@ def eval_rollout(
             actions[:, : step + 1][:, -pdt_model.seq_len:],
             returns[:, : step + 1][:, -pdt_model.seq_len:],
             time_steps[:, : step + 1][:, -pdt_model.seq_len:],
-            planning_tokens,
+            plan,
             log_attention=True
         )
         predicted_action = predicted_actions[0, -1].cpu().numpy()
@@ -361,7 +362,7 @@ def train(config: TrainConfig):
         seq_len=config.seq_len,
         reward_scale=config.reward_scale,
         path_length=config.num_plan_points,
-        num_planning_tokens=config.num_planning_tokens,
+        plan_length=config.plan_length,
         embedding_dim=config.embedding_dim
     )
     trainloader = DataLoader(
@@ -384,7 +385,7 @@ def train(config: TrainConfig):
     pdt_model = PlanningDecisionTransformer(
         state_dim=config.state_dim,
         action_dim=config.action_dim,
-        plan_dim=config.num_plan_points,
+        plan_dim=config.num_plan_points*2,
         embedding_dim=config.embedding_dim,
         seq_len=config.seq_len,
         episode_len=config.episode_len,
@@ -394,7 +395,7 @@ def train(config: TrainConfig):
         residual_dropout=config.residual_dropout,
         embedding_dropout=config.embedding_dropout,
         max_action=config.max_action,
-        num_planning_tokens=config.num_planning_tokens,
+        plan_length=config.plan_length,
     ).to(config.device)
 
     optim = torch.optim.AdamW(
@@ -426,28 +427,28 @@ def train(config: TrainConfig):
             first_batch = batch
         if step % config.eval_offline_every == 0:
             batch = first_batch
-        goal, states, actions, returns, time_steps, mask, planning_tokens = [b.to(config.device) for b in batch]
+        goal, states, actions, returns, time_steps, mask, plan = [b.to(config.device) for b in batch]
         # True value indicates that the corresponding key value will be ignored
         padding_mask = ~mask.to(torch.bool)
 
         # Forward pass through the model with planning tokens
-        predicted_planning_tokens, predicted_actions, attention_maps = pdt_model(
+        predicted_plan, predicted_actions, attention_maps = pdt_model(
             goal=goal,
             states=states,
             actions=actions,
             returns_to_go=returns,
             time_steps=time_steps,
-            planning_token=planning_tokens,  # Include planning tokens in the model's forward pass
+            plan=plan,  # Include planning tokens in the model's forward pass
             padding_mask=padding_mask,
             log_attention=False
         )
 
-        if step % config.eval_offline_every == 0 and config.num_planning_tokens:
+        if step % config.eval_offline_every == 0 and config.plan_length:
             plot_and_log_paths(
                 image_path=config.bg_image,
                 start=states[0, 0, :2].cpu(),
                 goal=goal.cpu(),
-                plan_paths=[predicted_planning_tokens[0]],  # the planning token for the first of the batch
+                plan_paths=[predicted_plan[0]],  # the planning token for the first of the batch
                 ant_path=states[0, :, :2],
                 output_folder=f'./visualisations/PDTv2-oracle-plan/{config.env_name}/{config.run_name}/train',
                 index=step,
@@ -456,10 +457,10 @@ def train(config: TrainConfig):
                 pos_std=dataset.state_std[0, :2]
             )
 
-        plan_loss = F.mse_loss(predicted_planning_tokens, planning_tokens.detach(), reduction="mean")
+        plan_loss = F.mse_loss(predicted_plan, plan.detach(), reduction="mean")
         action_loss = F.mse_loss(predicted_actions, actions.detach(), reduction="none")
         action_loss = (action_loss * mask.unsqueeze(-1)).mean()
-        combined_loss = 0.5 * action_loss + 0.5 * plan_loss if config.num_planning_tokens else action_loss
+        combined_loss = 0.5 * action_loss + 0.5 * plan_loss if config.plan_length else action_loss
         # Backpropagation and optimization for main model
 
         optim.zero_grad()
@@ -510,7 +511,7 @@ def train(config: TrainConfig):
                         pdt_model=pdt_model,
                         env=eval_env,
                         target_return=target_return * config.reward_scale,
-                        num_planning_tokens=config.num_planning_tokens,
+                        plan_length=config.plan_length,
                         device=config.device,
                         ep_id=ep_id
                     )
@@ -520,7 +521,7 @@ def train(config: TrainConfig):
                                         scale_factor=5)
                         arrays_to_video(render_frames, f'{video_folder}/render_t={step}-ep={ep_id}.mp4', scale_factor=1,
                                         use_grid=False)
-                        if config.num_planning_tokens:
+                        if config.plan_length:
                             arrays_to_video(pt_frames, f'{video_folder}/planning-token_t={step}-ep={ep_id}.mp4',
                                             scale_factor=1,
                                             fps=1)
