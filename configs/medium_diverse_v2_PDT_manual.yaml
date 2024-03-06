@@ -33,8 +33,9 @@ weight_decay: 0.0001
 log_attn_weights: 1
 log_attn_every: 250
 record_video: 1
-run_name: "run_24"
-num_planning_tokens: 0
-eval_offline_every: 2500
+run_name: "run_25"
+num_planning_tokens: 1
+eval_offline_every: 2000
 bg_image: "./antmaze_medium_bg.png"
 eval_path_plot_every: 2500
+num_plan_points: 25

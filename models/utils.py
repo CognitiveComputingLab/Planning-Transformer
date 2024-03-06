@@ -154,7 +154,7 @@ def plot_and_log_paths(image_path, start, goal, plan_paths, ant_path, output_fol
     for plan_path in plan_paths:
         if plan_path.shape[0]:
             # print(plan_path.shape, plan_path)
-            ax.plot(plan_path[:, 0], plan_path[:, 1], 'bo-', linewidth=2, markersize=5)
+            ax.plot(plan_path[:, 0], plan_path[:, 1], '-o', linewidth=2, markersize=5)
 
     if ant_path is not None:
         # Plot ant path with rainbow line
