@@ -449,7 +449,7 @@ def train(config: TrainConfig):
                 goal=goal.cpu(),
                 plan_paths=[predicted_planning_tokens[0]],  # the planning token for the first of the batch
                 ant_path=states[0, :, :2],
-                output_folder=f'./visualisations/PDTv2/{config.env_name}/{config.run_name}/train',
+                output_folder=f'./visualisations/PDTv2-oracle-plan/{config.env_name}/{config.run_name}/train',
                 index=step,
                 log_to_wandb=False,
                 pos_mean=dataset.state_mean[0, :2],
@@ -505,7 +505,7 @@ def train(config: TrainConfig):
                 for ep_id in trange(num_episodes, desc="Evaluation", leave=False):
                     if config.eval_seed == -1:
                         set_seed(range(config.eval_episodes)[ep_id] * 2, eval_env, deterministic_torch=False)
-                    video_folder = f'./visualisations/PDTv2/{config.env_name}/{config.run_name}'
+                    video_folder = f'./visualisations/PDTv2-oracle-plan/{config.env_name}/{config.run_name}'
                     eval_return, eval_len, attention_frames, render_frames, pt_frames, plan_paths, ant_path, goal = eval_rollout(
                         pdt_model=pdt_model,
                         env=eval_env,
