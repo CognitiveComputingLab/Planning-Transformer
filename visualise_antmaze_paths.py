@@ -6,13 +6,15 @@ import pickle
 from tqdm import tqdm
 def main(directory):
 
-    path_data_files = [f for f in os.listdir(directory) if re.match(r'path_data_\d+\.pkl', f)]
+    path_data_files = [f for f in os.listdir(directory) if re.match(r'path_data_.+pkl', f)]
     for path_data_file in tqdm(path_data_files, "plotting paths"):
+        # if not "15000-ep=9" in path_data_file:
+        #     continue
         with open(os.path.join(directory, path_data_file), 'rb') as f:
             data = pickle.load(f)
 
         plot_and_log_paths(
-            image_path="./antmaze_medium_bg.png",
+            image_path="antmaze_medium_bg.png",
             start = data['start'],
             goal = data['goal'],
             plan_paths = data['plan_paths'],

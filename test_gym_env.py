@@ -1,7 +1,6 @@
-import gym
-import d4rl
 import numpy as np
 from models import DT
+
 env_name = "antmaze-medium-diverse-v2"
 traj,info =  DT.load_d4rl_trajectories(env_name)
 # print(info['obs_mean'][0][:3])

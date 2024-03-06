@@ -19,11 +19,9 @@ import torch.nn as nn
 from torch.nn import functional as F
 from torch.utils.data import DataLoader, IterableDataset
 from tqdm.auto import trange
-from gym.utils import seeding
-from gym.envs.mujoco import mujoco_env
 
 import wandb
-from utils import log_attention_maps
+from models.utils import log_attention_maps
 
 
 @dataclass

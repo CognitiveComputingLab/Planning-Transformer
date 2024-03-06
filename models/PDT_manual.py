@@ -16,9 +16,8 @@ os.environ["WANDB_SILENT"] = "true"
 # concatenated
 
 import d4rl  # noqa
-from DT import *
-from utils import log_attention_maps, log_tensor_as_image, arrays_to_video, plot_and_log_paths
-from utils import simplify_path_to_target_points
+from models.DT import *
+from models.utils import *
 
 
 @dataclass
@@ -106,7 +105,7 @@ class TrainConfig:
 
 class SequenceManualPlanDataset(SequenceDataset):
     def __init__(self, env_name: str, seq_len: int = 10, reward_scale: float = 1.0, path_length=50,
-                 num_planning_tokens: int=1, embedding_dim: int = 128):
+                 num_planning_tokens: int = 1, embedding_dim: int = 128):
         super().__init__(env_name, seq_len, reward_scale)
         self.path_length = path_length
         self.num_planning_tokens = num_planning_tokens
@@ -130,7 +129,7 @@ class SequenceManualPlanDataset(SequenceDataset):
         time_steps = np.arange(start_idx, start_idx + self.seq_len)
 
         states = (states - self.state_mean) / self.state_std
-        goal = (goal -self.state_mean[0][:2])/self.state_std[0][:2]
+        goal = (goal - self.state_mean[0][:2]) / self.state_std[0][:2]
         returns = returns * self.reward_scale
         plan = self.create_plan(states).astype(np.float32)
         # pad up to seq_len if needed, padding is masked during training
@@ -204,7 +203,7 @@ class PlanningDecisionTransformer(DecisionTransformer):
         # we detatch the state embedding to prevent co-dependency during backprop
         device = states.device
         goal_modified_state_0 = torch.cat((goal, states[:, 0:1, 2:].clone().detach()), dim=-1)
-        goal_token = (self.state_emb(goal_modified_state_0) -state_emb_no_time_emb[:, 0:1, :]).detach()
+        goal_token = (self.state_emb(goal_modified_state_0) - state_emb_no_time_emb[:, 0:1, :]).detach()
 
         # [batch_size, seq_len * 3, emb_dim], (r_0, s_0, a_0, r_1, s_1, a_1, ...)
         sequence = (
@@ -280,7 +279,7 @@ def eval_rollout(
     plan_paths = []
     goal_unmodified = env.target_goal
     print(goal_unmodified)
-    goal =  torch.tensor(goal_unmodified, dtype=torch.float32, device=device).unsqueeze(0).unsqueeze(0)
+    goal = torch.tensor(goal_unmodified, dtype=torch.float32, device=device).unsqueeze(0).unsqueeze(0)
 
     for step in range(pdt_model.episode_len):
         # Generate the planning token every 20 steps (partial replanning)
@@ -319,8 +318,6 @@ def eval_rollout(
         )
         predicted_action = predicted_actions[0, -1].cpu().numpy()
         next_state, reward, done, info = env.step(predicted_action)
-        if not np.all(env.target_goal == goal_unmodified):
-            print(f"goal changed at step: {step} !")
 
         actions[:, step] = torch.as_tensor(predicted_action)
         states[:, step + 1] = torch.as_tensor(next_state)
@@ -330,11 +327,11 @@ def eval_rollout(
         episode_len += 1
 
         if ep_id < 3:
-            attention_map_frames.append(log_attention_maps(attention_maps, log_to_wandb=False)[0])
+            attention_map_frames.append(log_attention_maps(attention_maps, log_to_wandb=False))
 
         if done:
             break
-    ant_path = states[0, :, :2].cpu().numpy()
+    ant_path = states[0, :int(episode_len + 1), :2].cpu().numpy()
     return episode_return, episode_len, attention_map_frames, render_frames, pt_frames, plan_paths, ant_path, \
         goal_unmodified
 
@@ -491,9 +488,10 @@ def train(config: TrainConfig):
                     eval_env.seed(config.eval_seed)
                     np.random.seed(config.eval_seed)
                 eval_returns = []
+                eval_goal_dists = []
                 for ep_id in trange(num_episodes, desc="Evaluation", leave=False):
                     if config.eval_seed == -1:
-                        set_seed(range(config.eval_episodes)[ep_id] * 2,eval_env, deterministic_torch=False)
+                        set_seed(range(config.eval_episodes)[ep_id] * 2, eval_env, deterministic_torch=False)
                     video_folder = f'./visualisations/PDTv2/{config.env_name}/{config.run_name}'
                     eval_return, eval_len, attention_frames, render_frames, pt_frames, plan_paths, ant_path, goal = eval_rollout(
                         pdt_model=pdt_model,
@@ -505,14 +503,17 @@ def train(config: TrainConfig):
                     )
                     if ep_id < 3:
                         os.makedirs(video_folder, exist_ok=True)
-                        arrays_to_video(attention_frames, f'{video_folder}/attention_t={step}-ep={ep_id}.mp4', scale_factor=5)
-                        arrays_to_video(render_frames, f'{video_folder}/render_t={step}-ep={ep_id}.mp4', scale_factor=1)
+                        arrays_to_video(attention_frames, f'{video_folder}/attention_t={step}-ep={ep_id}.mp4',
+                                        scale_factor=5)
+                        arrays_to_video(render_frames, f'{video_folder}/render_t={step}-ep={ep_id}.mp4', scale_factor=1,
+                                        use_grid=False)
                         if config.num_planning_tokens:
-                            arrays_to_video(pt_frames, f'{video_folder}/planning-token_t={step}-ep={ep_id}.mp4', scale_factor=1,
+                            arrays_to_video(pt_frames, f'{video_folder}/planning-token_t={step}-ep={ep_id}.mp4',
+                                            scale_factor=1,
                                             fps=1)
                     # unscale for logging & correct normalized score computation
                     eval_returns.append(eval_return / config.reward_scale)
-
+                    eval_goal_dists.append(np.linalg.norm(ant_path[-1] - goal))
                     plot_and_log_paths(
                         image_path=config.bg_image,
                         start=ant_path[0],
@@ -534,13 +535,15 @@ def train(config: TrainConfig):
                     wandb.log(
                         {
                             f"eval/{target_return}_return_mean": np.mean(eval_returns),
-                            f"eval/{target_return}_return_std": np.std(eval_returns),
-                            f"eval/{target_return}_normalized_score_mean": np.mean(
-                                normalized_scores
-                            ),
-                            f"eval/{target_return}_normalized_score_std": np.std(
-                                normalized_scores
-                            ),
+                            # f"eval/{target_return}_return_std": np.std(eval_returns),
+                            # f"eval/{target_return}_normalized_score_mean": np.mean(
+                            #     normalized_scores
+                            # ),
+                            # f"eval/{target_return}_normalized_score_std": np.std(
+                            #     normalized_scores
+                            # ),
+                            f"eval/{target_return}_goal_dist_mean": np.mean(eval_goal_dists),
+                            f"eval/{target_return}_goal_dist_std": np.std(eval_goal_dists),
                         },
                         step=step,
                     )

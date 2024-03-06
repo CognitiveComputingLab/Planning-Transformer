@@ -12,6 +12,7 @@ Codebase for the Planning-Transformer advanced project.
    1. Add mujuco to environment variables by running `export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/home/jclinton/.mujoco/mujoco210/bin`in terminal
    1. If on WSL/Ubuntu run `sudo apt-get update && sudo apt install libosmesa6-dev libgl1-mesa-glx libglfw3 patchelf`
 3. Conda activate planning-transformer
+4. Cd to the Planning-Transformer directory then run `export PYTHONPATH="$(pwd):$PYTHONPATH"` in the terminal
 
 If using cuda run the following :
  1. pip3 install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118

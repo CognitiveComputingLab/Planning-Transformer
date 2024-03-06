@@ -9,6 +9,7 @@ import cv2
 import pickle
 import os
 from shapely.geometry import LineString
+import math
 
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
@@ -82,49 +83,58 @@ def log_tensor_as_image(tensor, log_key="tensor_visualization", log_to_wandb=Tru
         wandb.log({log_key: wandb.Image(img)})
     return np.array(img)
 
-def arrays_to_video(arrays, output_file, scale_factor=1.0, fps=30.0):
-    """
-    Converts a list of NumPy arrays into a video, with an option to scale the frames.
-    Adjusts frames of varying sizes to the largest frame size in the list.
+def create_grid(timesteps, dynamic_padding=True):
+    num_images = len(timesteps)
+    grid_cols = int(math.sqrt(num_images))
+    grid_rows = math.ceil(num_images / grid_cols)
 
-    Parameters:
-    arrays (list of np.ndarray): List of NumPy arrays representing the frames.
-    output_file (str): Path to the output video file.
-    scale_factor (float): Factor to scale the frames. Default is 1.0 (no scaling).
-    fps (float): Frames per second of the output video. Default is 30.0.
-    """
-    # Find the maximum frame size
-    max_width = max(arr.shape[1] for arr in arrays)
-    max_height = max(arr.shape[0] for arr in arrays)
-    video_size = (int(max_width * scale_factor), int(max_height * scale_factor))
+    img_height, img_width = timesteps[0].shape[:2]
+    padding = img_width // 10 if dynamic_padding else 10
 
-    # Define the codec and create VideoWriter object
-    fourcc = cv2.VideoWriter_fourcc(*'MP4V')
-    out = cv2.VideoWriter(output_file, fourcc, fps, video_size)
+    grid_height = img_height * grid_rows + padding * (grid_rows - 1)
+    grid_width = img_width * grid_cols + padding * (grid_cols - 1)
+    grid = np.zeros((grid_height, grid_width, timesteps[0].shape[-1]), dtype=np.uint8)
 
-    for arr in arrays:
-        #fix colour
-        arr = cv2.cvtColor(arr, cv2.COLOR_RGB2BGR)
+    for idx, img in enumerate(timesteps):
+        row, col = divmod(idx, grid_cols)
+        start_y = row * (img_height + padding)
+        start_x = col * (img_width + padding)
+        grid[start_y:start_y + img_height, start_x:start_x + img_width] = img
 
-        # Scale the frame
-        scaled_frame = cv2.resize(arr, (int(arr.shape[1] * scale_factor), int(arr.shape[0] * scale_factor)),
-                                  interpolation = cv2.INTER_NEAREST)
+    return grid
 
-        # Pad the frame with black pixels to match the video size
-        pad_width = (video_size[0] - scaled_frame.shape[1]) // 2
-        pad_height = (video_size[1] - scaled_frame.shape[0]) // 2
 
-        padded_frame = cv2.copyMakeBorder(scaled_frame, pad_height, pad_height, pad_width, pad_width,
+def arrays_to_video(timesteps_arrays, output_file, scale_factor=1.0, fps=30.0, use_grid=True):
+    # Pre-compute video size based on the largest grid dimensions after scaling
+    grids = [create_grid(timestep) for timestep in timesteps_arrays] if use_grid else timesteps_arrays
+    video_size = tuple(int(max(grid.shape[i] for grid in grids) * scale_factor) for i in [1, 0])
+
+    # Initialize VideoWriter with dynamic video size
+    out = cv2.VideoWriter(output_file, cv2.VideoWriter_fourcc(*'MP4V'), fps, video_size)
+
+    for grid in grids:
+        # if we log arrays with shape 1 or 2 in the last dimension we need to add more channnels to bring it to 3
+        grid = np.concatenate((grid, np.zeros(grid.shape[:2] + (3 - grid.shape[2],),dtype=np.uint8)), axis=2)
+        frame = cv2.cvtColor(grid, cv2.COLOR_RGB2BGR)  # Convert color space
+        if scale_factor!=1: frame = cv2.resize(frame, video_size, interpolation=cv2.INTER_NEAREST)
+
+        # Calculate padding to center the frame in the video
+        pad_width = (video_size[0] - frame.shape[1]) // 2
+        pad_height = (video_size[1] - frame.shape[0]) // 2
+
+        # Apply padding
+        if pad_width>0 or pad_height>0:
+            frame = cv2.copyMakeBorder(frame, pad_height, pad_height, pad_width, pad_width,
                                           cv2.BORDER_CONSTANT, value=[0, 0, 0])
 
-        # Write the frame
-        out.write(padded_frame)
+        out.write(frame)  # Write padded frame to the video
 
-    # Release everything when job is finished
-    out.release()
+    out.release()  # Release the VideoWriter
+
 
 def normalise_maze_coords(X,mean,std):
     return (np.array(X)-mean)/std
+
 def plot_and_log_paths(image_path, start, goal, plan_paths, ant_path, output_folder, index, pos_mean, pos_std,
                        log_to_wandb=True, save_data=True):
     # if the output folder doesn't exist make it
