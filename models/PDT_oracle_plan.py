@@ -120,21 +120,24 @@ class SequenceManualPlanDataset(SequenceDataset):
             path = pad_along_axis(path, pad_to=self.path_length, axis=1).reshape(-1, self.path_length * 2)
             return path
         else:
-            return np.empty((0, self.embedding_dim))
+            return np.empty((0, self.path_length * 2))
 
     def _prepare_sample(self, traj_idx, start_idx):
         traj = self.dataset[traj_idx]
         # https://github.com/kzl/decision-transformer/blob/e2d82e68f330c00f763507b3b01d774740bee53f/gym/experiment.py#L128 # noqa
         goal = traj["goals"][0:1].astype(np.float32)
         states = traj["observations"][start_idx: start_idx + self.seq_len]
+        states_till_end = traj["observations"][start_idx:]
         actions = traj["actions"][start_idx: start_idx + self.seq_len]
         returns = traj["returns"][start_idx: start_idx + self.seq_len]
         time_steps = np.arange(start_idx, start_idx + self.seq_len)
 
-        states = (states - self.state_mean) / self.state_std
-        goal = (goal - self.state_mean[0][:2]) / self.state_std[0][:2]
+
+        states = normalize_state(states, self.state_mean, self.state_std)
+        states_till_end = normalize_state(states_till_end, self.state_mean, self.state_std)
+        goal = normalize_state(goal,self.state_mean[0][:2], self.state_std[0][:2])
         returns = returns * self.reward_scale
-        plan = self.create_plan(states).astype(np.float32)
+        plan = self.create_plan(states_till_end).astype(np.float32)
         # pad up to seq_len if needed, padding is masked during training
         mask = np.hstack(
             [np.ones(states.shape[0]), np.zeros(self.seq_len - states.shape[0])]
@@ -193,27 +196,29 @@ class PlanningDecisionTransformer(DecisionTransformer):
         self.plan_emb = nn.Linear(plan_dim, embedding_dim)
         self.plan_positional_emb = nn.Embedding(plan_length, embedding_dim)
         self.plan_dim = plan_dim
-
         # Create position IDs for plan once
         self.register_buffer('plan_position_ids', torch.arange(0, self.plan_length).unsqueeze(0))
+
+        self.apply(self._init_weights)
 
     def forward(self, goal, states, actions, returns_to_go, time_steps, plan, padding_mask=None,
                 log_attention=False):
         batch_size, seq_len = states.shape[0], states.shape[1]
+        device = states.device
+
         # [batch_size, seq_len, emb_dim]
         time_emb = self.timestep_emb(time_steps)
         plan_pos_emb = self.plan_positional_emb(self.plan_position_ids)
-
         state_emb_no_time_emb = self.state_emb(states)
         state_emb = state_emb_no_time_emb + time_emb
         act_emb = self.action_emb(actions) + time_emb
         returns_emb = self.return_emb(returns_to_go.unsqueeze(-1)) + time_emb
-        plan_emb = self.plan_emb(plan) + plan_pos_emb
+        plan_emb = self.plan_emb(plan) + plan_pos_emb if self.plan_length else \
+            torch.empty(batch_size,0,self.embedding_dim, device=device)
 
         # handle goal
         # we do this inserting the goal into the state, embedding it then subtracting the state embedding
         # we detatch the state embedding to prevent co-dependency during backprop
-        device = states.device
         goal_modified_state_0 = torch.cat((goal, states[:, 0:1, 2:].clone().detach()), dim=-1)
         goal_token = (self.state_emb(goal_modified_state_0) - state_emb_no_time_emb[:, 0:1, :]).detach()
 

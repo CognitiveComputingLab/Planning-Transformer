@@ -206,16 +206,16 @@ def adjust_path_points(simplified_points, target_points):
         # Remove one of the closest points
         del simplified_points[closest_idx]
 
-def simplify_path_to_target_points(path, target_points, tolerance=0.1, tolerance_increment=0.05):
-    if len(path) < 2 or target_points >= len(path):
+def simplify_path_to_target_points(path, target_num_points, tolerance=0.1, tolerance_increment=0.05):
+    if len(path) < 2 or target_num_points >= len(path):
         return path
 
     line = LineString(path)
     simplified_line = line.simplify(tolerance)
     simplified_points = list(simplified_line.coords)
 
-    while len(simplified_points) != target_points:
-        if len(simplified_points) > target_points:
+    while len(simplified_points) != target_num_points:
+        if len(simplified_points) > target_num_points:
             tolerance += tolerance_increment
         else:
             tolerance -= tolerance_increment
@@ -228,6 +228,9 @@ def simplify_path_to_target_points(path, target_points, tolerance=0.1, tolerance
             break
 
     # Directly adjust the number of points to match the target
-    adjust_path_points(simplified_points, target_points)
+    adjust_path_points(simplified_points, target_num_points)
 
     return simplified_points
+
+def simplify_path_to_target_points_fast(path, num_points):
+    return np.array(path)[np.linspace(0, len(path) - 1, num_points, dtype=int)]

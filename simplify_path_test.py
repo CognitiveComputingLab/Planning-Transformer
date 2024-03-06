@@ -2,8 +2,9 @@ import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.widgets import Button, Slider
 import tqdm
-from models.utils import simplify_path_to_target_points
+from models.utils import *
 
+matplotlib.use('qtagg')
 class PathSimplifierApp:
     def __init__(self):
         self.fig, self.ax = plt.subplots()
@@ -81,7 +82,7 @@ def test_simplification():
 
         # Test simplification from 2 to 100 target points
         for target_points in range(2, 101):
-            simplified_path = simplify_path_to_target_points(path, target_points)
+            simplified_path = simplify_path_to_target_points_fast(path, target_points)
 
             # Check if the simplified path has the correct length
             assert len(
@@ -92,7 +93,7 @@ def test_simplification():
 
 # Ensure the simplify_path_to_target_points function is defined as per the previous discussions.
 # Call the test function
-test_simplification()
+# test_simplification()
 
-# app = PathSimplifierApp()
-# plt.show()
+app = PathSimplifierApp()
+plt.show()
