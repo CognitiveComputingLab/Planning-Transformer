@@ -4,8 +4,6 @@ Modified version of the single file implementation of Decision transformer as pr
 
 import warnings
 
-import numpy as np
-
 warnings.filterwarnings('ignore')
 warnings.filterwarnings('ignore', category=DeprecationWarning, module='numpy.*')
 
@@ -91,7 +89,8 @@ class TrainConfig:
 
     # Options for planning tokens
     plan_length: int = 1
-    num_plan_points: int=25
+    num_plan_points: int = 10
+    plan_bar_visualisation: bool = False
 
     # video
     record_video: bool = False
@@ -107,7 +106,7 @@ class TrainConfig:
 
 
 class SequenceManualPlanDataset(SequenceDataset):
-    def __init__(self, env_name: str, seq_len: int = 10, reward_scale: float = 1.0, path_length=50,
+    def __init__(self, env_name: str, seq_len: int = 10, reward_scale: float = 1.0, path_length=10,
                  plan_length: int = 1, embedding_dim: int = 128):
         super().__init__(env_name, seq_len, reward_scale)
         self.path_length = path_length
@@ -118,7 +117,7 @@ class SequenceManualPlanDataset(SequenceDataset):
         if self.plan_length:
             positions = states[:, :2]
             path = np.array(simplify_path_to_target_points(positions, self.path_length))[np.newaxis, :]
-            path = pad_along_axis(path, pad_to=self.path_length, axis=1).reshape(-1, self.path_length*2)
+            path = pad_along_axis(path, pad_to=self.path_length, axis=1).reshape(-1, self.path_length * 2)
             return path
         else:
             return np.empty((0, self.embedding_dim))
@@ -190,9 +189,10 @@ class PlanningDecisionTransformer(DecisionTransformer):
             ]
         )
         self.plan_length = plan_length
-        self.planning_head = nn.Sequential(nn.Linear(embedding_dim, embedding_dim), nn.Tanh())
+        self.planning_head = nn.Sequential(nn.Linear(embedding_dim, plan_dim), nn.Tanh())
         self.plan_emb = nn.Linear(plan_dim, embedding_dim)
         self.plan_positional_emb = nn.Embedding(plan_length, embedding_dim)
+        self.plan_dim = plan_dim
 
         # Create position IDs for plan once
         self.register_buffer('plan_position_ids', torch.arange(0, self.plan_length).unsqueeze(0))
@@ -236,7 +236,7 @@ class PlanningDecisionTransformer(DecisionTransformer):
             # account for the planning token in the mask
             # True values in the mask mean don't attend to, so we use zeroes so the plan and goal are always attended to
             plan_mask = torch.zeros(batch_size, self.plan_length, dtype=torch.bool,
-                                              device=device)
+                                    device=device)
             goal_mask = torch.zeros(batch_size, 1, dtype=torch.bool,
                                     device=device)
 
@@ -255,11 +255,11 @@ class PlanningDecisionTransformer(DecisionTransformer):
         out = self.out_norm(out)
 
         # for input to the planning_head we use the sequence shiftted one to the left of the plan_sequence
-        out_plan = self.planning_head(out[:, 2 : 2 + self.plan_length])
+        out_plan = self.planning_head(out[:, 2: 2 + self.plan_length])
 
         # predict actions only from state embeddings
         states = torch.cat([out[:, 2:3], out[:, (5 + self.plan_length)::3]], dim=1)
-        out_actions = self.action_head(states) * self.max_action # [batch_size, seq_len, action_dim]
+        out_actions = self.action_head(states) * self.max_action  # [batch_size, seq_len, action_dim]
 
         return out_plan, out_actions, attention_maps
 
@@ -272,7 +272,8 @@ def eval_rollout(
         target_return: float,
         plan_length: int,
         device: str = "gpu",
-        ep_id=0,
+        ep_id: int =0,
+        plan_bar_visualisation: bool = False
 ) -> Tuple[float, float, list, list, list, list, np.ndarray, tuple]:
     states = torch.zeros(1, pdt_model.episode_len + 1, pdt_model.state_dim, dtype=torch.float, device=device)
     actions = torch.zeros(1, pdt_model.episode_len, pdt_model.action_dim, dtype=torch.float, device=device)
@@ -297,8 +298,7 @@ def eval_rollout(
     for step in range(pdt_model.episode_len):
         # Generate the planning token every 20 steps (partial replanning)
         if step % 20 == 0:
-            plan = torch.zeros(1, plan_length, pdt_model.embedding_dim, dtype=torch.float,
-                                          device=device)
+            plan = torch.zeros(1, plan_length, pdt_model.plan_dim, dtype=torch.float, device=device)
             # plan tokens are generated via an autoregressive generation loop just like is done in NLP generation tasks
             for plan_token_i in range(plan_length):
                 pred_plan, _, _ = pdt_model(
@@ -313,10 +313,13 @@ def eval_rollout(
                 plan[:, plan_token_i] = pred_plan[0, -1]
 
             if plan_length:
-                plan_paths.append(plan[0].cpu())
-                pt_frame = log_tensor_as_image(plan_paths[-1].view(-1), f"plan_ep_{ep_id}",
-                                               log_to_wandb=False)
-                pt_frames.append(pt_frame)
+                plan_path = plan[0][0].detach().cpu()
+                plan_path = plan_path.reshape(*plan_path.shape[:-1], -1, 2) # Unflatten the last axis, so we have a 2D path
+                plan_paths.append(plan_path)
+                if plan_bar_visualisation:
+                    pt_frame = log_tensor_as_image(plan_path[-1].view(-1), f"plan_ep_{ep_id}",
+                                                   log_to_wandb=False)
+                    pt_frames.append(pt_frame)
 
         if ep_id < 3:
             render_frames.append(env.render(mode="rgb_array"))
@@ -385,7 +388,7 @@ def train(config: TrainConfig):
     pdt_model = PlanningDecisionTransformer(
         state_dim=config.state_dim,
         action_dim=config.action_dim,
-        plan_dim=config.num_plan_points*2,
+        plan_dim=config.num_plan_points * 2,
         embedding_dim=config.embedding_dim,
         seq_len=config.seq_len,
         episode_len=config.episode_len,
@@ -443,20 +446,6 @@ def train(config: TrainConfig):
             log_attention=False
         )
 
-        if step % config.eval_offline_every == 0 and config.plan_length:
-            plot_and_log_paths(
-                image_path=config.bg_image,
-                start=states[0, 0, :2].cpu(),
-                goal=goal.cpu(),
-                plan_paths=[predicted_plan[0]],  # the planning token for the first of the batch
-                ant_path=states[0, :, :2],
-                output_folder=f'./visualisations/PDTv2-oracle-plan/{config.env_name}/{config.run_name}/train',
-                index=step,
-                log_to_wandb=False,
-                pos_mean=dataset.state_mean[0, :2],
-                pos_std=dataset.state_std[0, :2]
-            )
-
         plan_loss = F.mse_loss(predicted_plan, plan.detach(), reduction="mean")
         action_loss = F.mse_loss(predicted_actions, actions.detach(), reduction="none")
         action_loss = (action_loss * mask.unsqueeze(-1)).mean()
@@ -478,6 +467,28 @@ def train(config: TrainConfig):
         #         wandb.log({f"gradients_after/{name}": wandb.Histogram(param.grad.cpu().data.numpy())})
 
         # print("train_loss", main_loss.item())
+
+        if step % config.eval_offline_every == 0 and config.plan_length:
+            # select first of the batch and first of the plan sequence
+            paths = []
+            for i,path in enumerate([predicted_plan, plan]):
+                transformed_path = path[0][0].detach().cpu()
+                paths.append(transformed_path.reshape(*transformed_path.shape[:-1], -1, 2))
+
+            # for all variables we use the first of the batch
+            plot_and_log_paths(
+                image_path=config.bg_image,
+                start=states[0, 0, :2].cpu(),
+                goal=goal[0, 0].cpu(),
+                plan_paths= paths,
+                ant_path=states[0, :, :2].cpu(),
+                output_folder=f'./visualisations/PDTv2-oracle-plan/{config.env_name}/{config.run_name}/train',
+                index=step,
+                log_to_wandb=False,
+                pos_mean=dataset.state_mean[0, :2],
+                pos_std=dataset.state_std[0, :2]
+            )
+
         wandb.log(
             {
                 "train_action_loss": action_loss.item(),
@@ -507,13 +518,14 @@ def train(config: TrainConfig):
                     if config.eval_seed == -1:
                         set_seed(range(config.eval_episodes)[ep_id] * 2, eval_env, deterministic_torch=False)
                     video_folder = f'./visualisations/PDTv2-oracle-plan/{config.env_name}/{config.run_name}'
-                    eval_return, eval_len, attention_frames, render_frames, pt_frames, plan_paths, ant_path, goal = eval_rollout(
+                    eval_return, eval_len, attention_frames, render_frames, plan_frames, plan_paths, ant_path, goal = eval_rollout(
                         pdt_model=pdt_model,
                         env=eval_env,
                         target_return=target_return * config.reward_scale,
                         plan_length=config.plan_length,
                         device=config.device,
-                        ep_id=ep_id
+                        ep_id=ep_id,
+                        plan_bar_visualisation=config.plan_bar_visualisation
                     )
                     if ep_id < 3:
                         os.makedirs(video_folder, exist_ok=True)
@@ -521,10 +533,9 @@ def train(config: TrainConfig):
                                         scale_factor=5)
                         arrays_to_video(render_frames, f'{video_folder}/render_t={step}-ep={ep_id}.mp4', scale_factor=1,
                                         use_grid=False)
-                        if config.plan_length:
-                            arrays_to_video(pt_frames, f'{video_folder}/planning-token_t={step}-ep={ep_id}.mp4',
-                                            scale_factor=1,
-                                            fps=1)
+                        if config.plan_length and config.plan_bar_visualisation:
+                            arrays_to_video(plan_frames, f'{video_folder}/planning-token_t={step}-ep={ep_id}.mp4',
+                                            scale_factor=1, fps=1, use_grid=False)
                     # unscale for logging & correct normalized score computation
                     eval_returns.append(eval_return / config.reward_scale)
                     eval_goal_dists.append(np.linalg.norm(ant_path[-1] - goal))

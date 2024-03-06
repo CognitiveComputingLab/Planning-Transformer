@@ -57,7 +57,7 @@ def log_tensor_as_image(tensor, log_key="tensor_visualization", log_to_wandb=Tru
         raise ValueError("Input tensor must be 1-dimensional")
 
     # Convert the tensor to a numpy array
-    np_tensor = tensor.detach().cpu().numpy()
+    np_tensor = tensor.numpy()
 
     # Normalize the tensor for better color mapping
     norm_tensor = (np_tensor - np.min(np_tensor)) / (np.max(np_tensor) - np.min(np_tensor))
@@ -113,6 +113,8 @@ def arrays_to_video(timesteps_arrays, output_file, scale_factor=1.0, fps=30.0, u
     out = cv2.VideoWriter(output_file, cv2.VideoWriter_fourcc(*'MP4V'), fps, video_size)
 
     for grid in grids:
+        # if the image has an alpha channel we'll remove it
+        grid = grid[:, :, :3]
         # if we log arrays with shape 1 or 2 in the last dimension we need to add more channnels to bring it to 3
         grid = np.concatenate((grid, np.zeros(grid.shape[:2] + (3 - grid.shape[2],),dtype=np.uint8)), axis=2)
         frame = cv2.cvtColor(grid, cv2.COLOR_RGB2BGR)  # Convert color space
@@ -148,9 +150,12 @@ def plot_and_log_paths(image_path, start, goal, plan_paths, ant_path, output_fol
     ax.imshow(bg_image,extent=(tl[0],br[0],tl[1], br[1]))
 
     goal= np.array(goal)
-    # print(goal/8)
 
-    # Plot plan path with blue line and dots
+    # Mark start and goal
+    ax.plot(start[0], start[1], 'go', markersize=10)  # Start in green
+    ax.scatter(goal[0], goal[1], s=100, c='silver', marker='*', zorder=5)  # Goal in silver
+
+    # Plot plan paths with different coloured lines and dots
     for plan_path in plan_paths:
         if plan_path.shape[0]:
             # print(plan_path.shape, plan_path)
@@ -165,10 +170,6 @@ def plot_and_log_paths(image_path, start, goal, plan_paths, ant_path, output_fol
         for i in range(len(ant_path) - 1):
             plt.plot(ant_path[i:i + 2, 0], ant_path[i:i + 2, 1], color=cmap(norm(i / (len(ant_path) - 2))),
                      linewidth=2)
-
-    # Mark start and goal
-    ax.plot(start[0], start[1], 'go', markersize=10)  # Start in green
-    ax.scatter(goal[0], goal[1], s=100, c='silver', marker='*', zorder=5)  # Goal in silver
 
     # Remove axes for better visualization
     ax.axis('off')
