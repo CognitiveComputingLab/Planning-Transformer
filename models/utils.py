@@ -159,7 +159,7 @@ def plot_and_log_paths(image_path, start, goal, plan_paths, ant_path, output_fol
     for plan_path in plan_paths:
         if plan_path.shape[0]:
             # print(plan_path.shape, plan_path)
-            ax.plot(plan_path[:, 0], plan_path[:, 1], '-o', linewidth=2, markersize=5)
+            ax.plot(plan_path[:, 0], plan_path[:, 1], '-o', linewidth=2, markersize=4, alpha=0.5)
 
     if ant_path is not None:
         # Plot ant path with rainbow line
@@ -206,15 +206,22 @@ def adjust_path_points(simplified_points, target_points):
         # Remove one of the closest points
         del simplified_points[closest_idx]
 
-def simplify_path_to_target_points(path, target_num_points, tolerance=0.1, tolerance_increment=0.05):
+def simplify_path_to_target_points(path, target_num_points, tolerance_increment=0.2,debug=False):
     if len(path) < 2 or target_num_points >= len(path):
         return path
 
+
+    # intial coarse simplify
+    # path = simplify_path_to_target_points_fast(path, target_num_points*5)
+    tolerance = 1
+
     line = LineString(path)
+
     simplified_line = line.simplify(tolerance)
     simplified_points = list(simplified_line.coords)
 
     while len(simplified_points) != target_num_points:
+        if debug: print(tolerance, len(simplified_points))
         if len(simplified_points) > target_num_points:
             tolerance += tolerance_increment
         else:

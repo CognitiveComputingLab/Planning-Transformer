@@ -91,6 +91,7 @@ class TrainConfig:
     plan_length: int = 1
     num_plan_points: int = 10
     plan_bar_visualisation: bool = False
+    replanning_interval: int = 40
 
     # video
     record_video: bool = False
@@ -113,10 +114,20 @@ class SequenceManualPlanDataset(SequenceDataset):
         self.plan_length = plan_length
         self.embedding_dim = embedding_dim
 
+        traj_dists = np.array([self.traj_distance(traj) for traj in self.dataset])
+        self.sample_prob *= traj_dists / traj_dists.sum()
+        self.sample_prob /= self.sample_prob.sum()
+        self.max_seq_length = max(self.info["traj_lens"])
+
+    @staticmethod
+    def traj_distance(traj):
+        obs = traj['observations']
+        return np.linalg.norm(obs[-1][:2] - obs[0][:2])
+
     def create_plan(self, states):
         if self.plan_length:
             positions = states[:, :2]
-            path = np.array(simplify_path_to_target_points(positions, self.path_length))[np.newaxis, :]
+            path = np.array(simplify_path_to_target_points_fast(positions, self.path_length))[np.newaxis, :]
             path = pad_along_axis(path, pad_to=self.path_length, axis=1).reshape(-1, self.path_length * 2)
             return path
         else:
@@ -126,16 +137,18 @@ class SequenceManualPlanDataset(SequenceDataset):
         traj = self.dataset[traj_idx]
         # https://github.com/kzl/decision-transformer/blob/e2d82e68f330c00f763507b3b01d774740bee53f/gym/experiment.py#L128 # noqa
         goal = traj["goals"][0:1].astype(np.float32)
+
+        # Hindsight goal relabelling to improve trajectory quality
+        # goal = traj["observations"][-1:, :2]
         states = traj["observations"][start_idx: start_idx + self.seq_len]
         states_till_end = traj["observations"][start_idx:]
         actions = traj["actions"][start_idx: start_idx + self.seq_len]
         returns = traj["returns"][start_idx: start_idx + self.seq_len]
         time_steps = np.arange(start_idx, start_idx + self.seq_len)
 
-
         states = normalize_state(states, self.state_mean, self.state_std)
         states_till_end = normalize_state(states_till_end, self.state_mean, self.state_std)
-        goal = normalize_state(goal,self.state_mean[0][:2], self.state_std[0][:2])
+        goal = normalize_state(goal, self.state_mean[0:1, :2], self.state_std[0:1, :2])
         returns = returns * self.reward_scale
         plan = self.create_plan(states_till_end).astype(np.float32)
         # pad up to seq_len if needed, padding is masked during training
@@ -147,13 +160,21 @@ class SequenceManualPlanDataset(SequenceDataset):
             actions = pad_along_axis(actions, pad_to=self.seq_len)
             returns = pad_along_axis(returns, pad_to=self.seq_len)
 
-        return goal, states, actions, returns, time_steps, mask, plan
+        steps_till_end = states_till_end.shape[0]
+        if steps_till_end < self.max_seq_length:
+            states_till_end = pad_along_axis(states_till_end, pad_to=self.max_seq_length)
+
+        return goal, states, actions, returns, time_steps, mask, plan, states_till_end, steps_till_end
 
 
 def construct_sequence_with_goal_and_plan(goal, plan, rsa_sequence):
     first_rs = rsa_sequence[:, :2]  # shape [batch_size, 2, emb_dim (or 1 if mask)]
     remaining_elements = rsa_sequence[:, 2:]  # shape [batch_size, 3*seq_len-2, emb_dim (or 1 if mask)]
     return torch.cat([goal, first_rs, plan, remaining_elements], dim=1)
+
+
+def un_normalise_state(state, state_mean, state_std):
+    return (state * state_std) + state_mean
 
 
 class PlanningDecisionTransformer(DecisionTransformer):
@@ -214,7 +235,7 @@ class PlanningDecisionTransformer(DecisionTransformer):
         act_emb = self.action_emb(actions) + time_emb
         returns_emb = self.return_emb(returns_to_go.unsqueeze(-1)) + time_emb
         plan_emb = self.plan_emb(plan) + plan_pos_emb if self.plan_length else \
-            torch.empty(batch_size,0,self.embedding_dim, device=device)
+            torch.empty(batch_size, 0, self.embedding_dim, device=device)
 
         # handle goal
         # we do this inserting the goal into the state, embedding it then subtracting the state embedding
@@ -277,8 +298,9 @@ def eval_rollout(
         target_return: float,
         plan_length: int,
         device: str = "gpu",
-        ep_id: int =0,
-        plan_bar_visualisation: bool = False
+        ep_id: int = 0,
+        plan_bar_visualisation: bool = False,
+        replanning_interval: int = 40,
 ) -> Tuple[float, float, list, list, list, list, np.ndarray, tuple]:
     states = torch.zeros(1, pdt_model.episode_len + 1, pdt_model.state_dim, dtype=torch.float, device=device)
     actions = torch.zeros(1, pdt_model.episode_len, pdt_model.action_dim, dtype=torch.float, device=device)
@@ -302,16 +324,16 @@ def eval_rollout(
 
     for step in range(pdt_model.episode_len):
         # Generate the planning token every 20 steps (partial replanning)
-        if step % 20 == 0:
+        if step % replanning_interval == 0:
             plan = torch.zeros(1, plan_length, pdt_model.plan_dim, dtype=torch.float, device=device)
             # plan tokens are generated via an autoregressive generation loop just like is done in NLP generation tasks
             for plan_token_i in range(plan_length):
                 pred_plan, _, _ = pdt_model(
                     goal,
-                    states[:, -1:],
+                    states[:, step:step + 1],
                     torch.zeros(1, 1, pdt_model.action_dim, dtype=torch.float, device=device),
-                    returns[:, -1:],
-                    time_steps[:, -1:],
+                    returns[:, step:step + 1],
+                    time_steps[:, step:step + 1],
                     plan=plan[:, :plan_token_i],
                     log_attention=False
                 )
@@ -319,7 +341,8 @@ def eval_rollout(
 
             if plan_length:
                 plan_path = plan[0][0].detach().cpu()
-                plan_path = plan_path.reshape(*plan_path.shape[:-1], -1, 2) # Unflatten the last axis, so we have a 2D path
+                # Unflatten the last axis, so we have a 2D path
+                plan_path = plan_path.reshape(*plan_path.shape[:-1], -1, 2)
                 plan_paths.append(plan_path)
                 if plan_bar_visualisation:
                     pt_frame = log_tensor_as_image(plan_path[-1].view(-1), f"plan_ep_{ep_id}",
@@ -435,7 +458,8 @@ def train(config: TrainConfig):
             first_batch = batch
         if step % config.eval_offline_every == 0:
             batch = first_batch
-        goal, states, actions, returns, time_steps, mask, plan = [b.to(config.device) for b in batch]
+        goal, states, actions, returns, time_steps, mask, plan, states_till_end, steps_left = \
+            [b.to(config.device) for b in batch]
         # True value indicates that the corresponding key value will be ignored
         padding_mask = ~mask.to(torch.bool)
 
@@ -473,26 +497,28 @@ def train(config: TrainConfig):
 
         # print("train_loss", main_loss.item())
 
-        if step % config.eval_offline_every == 0 and config.plan_length:
-            # select first of the batch and first of the plan sequence
-            paths = []
-            for i,path in enumerate([predicted_plan, plan]):
-                transformed_path = path[0][0].detach().cpu()
-                paths.append(transformed_path.reshape(*transformed_path.shape[:-1], -1, 2))
+        if step % config.eval_offline_every == 0:
+            for batch_index in range(10):
+                paths = []
+                if config.plan_length:
+                    # select batch_index of the batch and first of the plan sequence
+                    for i, path in enumerate([predicted_plan, plan]):
+                        transformed_path = path[batch_index, 0].detach().cpu()
+                        paths.append(transformed_path.reshape(*transformed_path.shape[:-1], -1, 2))
 
-            # for all variables we use the first of the batch
-            plot_and_log_paths(
-                image_path=config.bg_image,
-                start=states[0, 0, :2].cpu(),
-                goal=goal[0, 0].cpu(),
-                plan_paths= paths,
-                ant_path=states[0, :, :2].cpu(),
-                output_folder=f'./visualisations/PDTv2-oracle-plan/{config.env_name}/{config.run_name}/train',
-                index=step,
-                log_to_wandb=False,
-                pos_mean=dataset.state_mean[0, :2],
-                pos_std=dataset.state_std[0, :2]
-            )
+                # for all variables we use the first of the batch
+                plot_and_log_paths(
+                    image_path=config.bg_image,
+                    start=states[batch_index, 0, :2].cpu(),
+                    goal=goal[batch_index, 0].cpu(),
+                    plan_paths=paths,
+                    ant_path=states_till_end[batch_index, :steps_left[batch_index], :2].cpu(),
+                    output_folder=f'./visualisations/PDTv2-oracle-plan/{config.env_name}/{config.run_name}/train',
+                    index=f"step={step}-batch_idx={batch_index}",
+                    log_to_wandb=False,
+                    pos_mean=dataset.state_mean[0, :2],
+                    pos_std=dataset.state_std[0, :2]
+                )
 
         wandb.log(
             {
@@ -515,8 +541,7 @@ def train(config: TrainConfig):
             pdt_model.eval()
             for target_return in config.target_returns:
                 if config.eval_seed != -1:
-                    eval_env.seed(config.eval_seed)
-                    np.random.seed(config.eval_seed)
+                    set_seed(config.eval_seed, eval_env, deterministic_torch=False)
                 eval_returns = []
                 eval_goal_dists = []
                 for ep_id in trange(num_episodes, desc="Evaluation", leave=False):
@@ -530,7 +555,8 @@ def train(config: TrainConfig):
                         plan_length=config.plan_length,
                         device=config.device,
                         ep_id=ep_id,
-                        plan_bar_visualisation=config.plan_bar_visualisation
+                        plan_bar_visualisation=config.plan_bar_visualisation,
+                        replanning_interval=config.replanning_interval
                     )
                     if ep_id < 3:
                         os.makedirs(video_folder, exist_ok=True)

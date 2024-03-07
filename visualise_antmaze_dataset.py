@@ -1,19 +1,23 @@
 import argparse
 import sys
+import tqdm
 
 from models.utils import plot_and_log_paths
 
 sys.path.append("models.utils")
-from models import DT
-
+from models import DT, PDT_oracle_plan
+import numpy as np
 
 def main(output_directory):
     env_name = "antmaze-medium-diverse-v2"
-    traj, info = DT.load_d4rl_trajectories(env_name)
-    mean = info["obs_mean"][0][:2]
-    std = info["obs_std"][0][:2]
+    dataset = PDT_oracle_plan.SequenceManualPlanDataset(env_name)
 
-    for idx, trajectory in enumerate(traj[:10]):
+    mean =dataset.state_mean[0, :2]
+    std = dataset.state_std[0, :2]
+
+    for idx in tqdm.tqdm(range(100), desc="Generating dataset paths"):
+        traj_idx = np.random.choice(len(dataset.dataset), p=dataset.sample_prob)
+        trajectory = dataset.dataset[traj_idx]
         observations = trajectory['observations']
         goal = DT.normalize_state(trajectory['goals'][0], mean, std)
         ant_path = DT.normalize_state(observations[:, :2], mean, std)

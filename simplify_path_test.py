@@ -1,10 +1,14 @@
+import random
+
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.widgets import Button, Slider
 import tqdm
 from models.utils import *
+import matplotlib as mpl
+from timeit import default_timer as timer
 
-matplotlib.use('qtagg')
+mpl.use('QtAgg')
 class PathSimplifierApp:
     def __init__(self):
         self.fig, self.ax = plt.subplots()
@@ -45,11 +49,12 @@ class PathSimplifierApp:
 
     def on_release(self, event):
         self.drawing = False
+        print(len(self.xs))
 
     def simplify_path(self, event):
         target_points = int(self.slider.val)
         path = list(zip(self.xs, self.ys))
-        simplified_path = simplify_path_to_target_points(path, target_points)
+        simplified_path = list(simplify_path_to_target_points_fast(path, target_points))
         xs, ys = zip(*simplified_path) if simplified_path else ([], [])
 
         self.simplified_path.set_data(xs, ys)
@@ -77,12 +82,12 @@ def generate_random_path(num_points):
 def test_simplification():
     num_tests = 10  # Number of test cases
     for i in tqdm.tqdm(range(num_tests),desc="test cases"):
-        # Generate a random path with at least 100 points
-        path = generate_random_path(100)
+        # Generate a random path with at least 1000 points
+        path = generate_random_path(random.randint(500,1000))
 
         # Test simplification from 2 to 100 target points
-        for target_points in range(2, 101):
-            simplified_path = simplify_path_to_target_points_fast(path, target_points)
+        for target_points in range(5, 20):
+            simplified_path = simplify_path_to_target_points(path, target_points)
 
             # Check if the simplified path has the correct length
             assert len(
@@ -93,7 +98,12 @@ def test_simplification():
 
 # Ensure the simplify_path_to_target_points function is defined as per the previous discussions.
 # Call the test function
+# path = generate_random_path(100)
+# new_path = simplify_path_to_target_points(path, 10,debug=1)
+# start = timer()
 # test_simplification()
+# end = timer()
+# print(end - start)
 
 app = PathSimplifierApp()
 plt.show()

@@ -7,36 +7,37 @@ checkpoints_path: "./checkpoints/medium_diverse/PDT-oracle"
 clip_grad: 0.25
 deterministic_torch: false
 device: cuda
-embedding_dim: 64
+embedding_dim: 128
 embedding_dropout: 0.1 #0.1
 env_name: "antmaze-medium-diverse-v2"
 episode_len: 1000
 eval_episodes: 10
 eval_every: 5000
-eval_seed: -1
+eval_seed: 42 #42 or -1 to seed every run the same
 group: "dt-antmaze-medium-PDT-oracle"
-learning_rate: 0.0001
+learning_rate: 0.0001 #0.0001
 max_action: 1.0
 name: "PDT-oracle"
-num_heads: 1
+num_heads: 2
 num_layers: 3
 num_workers: 4
 project: "CORL"
 residual_dropout: 0.1 #0.1
 reward_scale: 1.0
-seq_len: 20
+seq_len: 40
 target_returns: [1.0]
 train_seed: 10 #10
 update_steps: 100000
-warmup_steps: 10000
+warmup_steps: 20000
 weight_decay: 0.0001
 log_attn_weights: 1
 log_attn_every: 250
 record_video: 1
-run_name: "run_25"
+run_name: "run_32"
 plan_length: 1
 eval_offline_every: 2000
 bg_image: "./antmaze_medium_bg.png"
 eval_path_plot_every: 2500
 num_plan_points: 10
 plan_bar_visualisation: false
+replanning_interval: 80
