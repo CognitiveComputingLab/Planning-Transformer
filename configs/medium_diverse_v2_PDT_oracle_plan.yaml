@@ -1,5 +1,5 @@
 attention_dropout: 0.1 #0.1
-batch_size: 64
+batch_size: 256 #64
 betas:
 - 0.9
 - 0.999
@@ -28,12 +28,12 @@ seq_len: 40
 target_returns: [1.0]
 train_seed: 10 #10
 update_steps: 100000
-warmup_steps: 20000
+warmup_steps: 10000
 weight_decay: 0.0001
 log_attn_weights: 1
 log_attn_every: 250
 record_video: 1
-run_name: "run_32"
+run_name: "run_34"
 plan_length: 1
 eval_offline_every: 2000
 bg_image: "./antmaze_medium_bg.png"
@@ -41,3 +41,4 @@ eval_path_plot_every: 2500
 num_plan_points: 10
 plan_bar_visualisation: false
 replanning_interval: 80
+num_eval_videos: 1

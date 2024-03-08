@@ -241,3 +241,12 @@ def simplify_path_to_target_points(path, target_num_points, tolerance_increment=
 
 def simplify_path_to_target_points_fast(path, num_points):
     return np.array(path)[np.linspace(0, len(path) - 1, num_points, dtype=int)]
+
+def simplify_path_to_target_points_by_distance(path, num_points):
+    path = np.array(path)
+    dists = np.linalg.norm(np.diff(path, axis=0), axis=1)
+    cum_dists = np.insert(np.cumsum(dists), 0, 0)
+    target_dists = np.linspace(0, cum_dists[-1], num_points)
+    target_indices = np.searchsorted(cum_dists, target_dists, side='right') - 1
+    target_indices[0], target_indices[-1] = 0, len(path) - 1  # Ensure first and last points are included
+    return path[target_indices]

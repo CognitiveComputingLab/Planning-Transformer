@@ -99,6 +99,7 @@ class TrainConfig:
     bg_image: str = "./antmaze_medium_bg.png"
     eval_offline_every: int = 50
     eval_path_plot_every: int = 1000
+    num_eval_videos: int = 3
 
     def __post_init__(self):
         self.name = f"{self.name}-{self.env_name}-{str(uuid.uuid4())[:8]}"
@@ -127,7 +128,7 @@ class SequenceManualPlanDataset(SequenceDataset):
     def create_plan(self, states):
         if self.plan_length:
             positions = states[:, :2]
-            path = np.array(simplify_path_to_target_points_fast(positions, self.path_length))[np.newaxis, :]
+            path = np.array(simplify_path_to_target_points_by_distance(positions, self.path_length))[np.newaxis, :]
             path = pad_along_axis(path, pad_to=self.path_length, axis=1).reshape(-1, self.path_length * 2)
             return path
         else:
@@ -558,7 +559,7 @@ def train(config: TrainConfig):
                         plan_bar_visualisation=config.plan_bar_visualisation,
                         replanning_interval=config.replanning_interval
                     )
-                    if ep_id < 3:
+                    if ep_id < config.num_eval_videos:
                         os.makedirs(video_folder, exist_ok=True)
                         arrays_to_video(attention_frames, f'{video_folder}/attention_t={step}-ep={ep_id}.mp4',
                                         scale_factor=5)
