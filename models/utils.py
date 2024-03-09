@@ -250,3 +250,18 @@ def simplify_path_to_target_points_by_distance(path, num_points):
     target_indices = np.searchsorted(cum_dists, target_dists, side='right') - 1
     target_indices[0], target_indices[-1] = 0, len(path) - 1  # Ensure first and last points are included
     return path[target_indices]
+
+
+def simplify_path_to_target_points_by_distance_log_scale(path, num_points):
+    path = np.array(path)
+    dists = np.linalg.norm(np.diff(path, axis=0), axis=1)
+    cum_dists = np.insert(np.cumsum(dists), 0, 0)
+
+    # Generate logarithmic scale and scale it to fit the range of cum_dists
+    log_scale = np.logspace(0, 1, num_points, base=10) - 1
+    max_log = log_scale[-1]  # The last value in log_scale represents the 'maximum' before scaling
+    scaled_log_dists = log_scale / max_log * cum_dists[-1]
+
+    target_indices = np.searchsorted(cum_dists, scaled_log_dists, side='right') - 1
+
+    return path[target_indices]

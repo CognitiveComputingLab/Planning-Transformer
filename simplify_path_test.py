@@ -49,12 +49,11 @@ class PathSimplifierApp:
 
     def on_release(self, event):
         self.drawing = False
-        print(len(self.xs))
 
     def simplify_path(self, event):
         target_points = int(self.slider.val)
         path = list(zip(self.xs, self.ys))
-        simplified_path = list(simplify_path_to_target_points_fast(path, target_points))
+        simplified_path = list(simplify_path_to_target_points_by_distance_log_scale(path, target_points))
         xs, ys = zip(*simplified_path) if simplified_path else ([], [])
 
         self.simplified_path.set_data(xs, ys)
@@ -87,7 +86,7 @@ def test_simplification():
 
         # Test simplification from 2 to 100 target points
         for target_points in range(5, 20):
-            simplified_path = simplify_path_to_target_points_by_distance(path, target_points)
+            simplified_path = simplify_path_to_target_points_by_distance_log_scale(path, target_points)
 
             # Check if the simplified path has the correct length
             assert len(

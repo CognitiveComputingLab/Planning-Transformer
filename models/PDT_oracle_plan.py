@@ -7,10 +7,12 @@ import warnings
 warnings.filterwarnings('ignore')
 warnings.filterwarnings('ignore', category=DeprecationWarning, module='numpy.*')
 
-import os
+import os, sys
 
 os.environ['D4RL_SUPPRESS_IMPORT_ERROR'] = '1'
 os.environ["WANDB_SILENT"] = "true"
+if os.getcwd() not in sys.path:
+    sys.path.append(os.getcwd())
 
 # Modify PDT forward pass to generate planning tokens which use embedded dim and thus are the same size and able to be
 # concatenated
@@ -97,12 +99,17 @@ class TrainConfig:
     record_video: bool = False
     run_name: str = "run_0"
     bg_image: str = "./antmaze_medium_bg.png"
+    num_eval_videos: int = 3
+
+    #other
+    checkpoint_to_load: Optional[str] = None
     eval_offline_every: int = 50
     eval_path_plot_every: int = 1000
-    num_eval_videos: int = 3
 
     def __post_init__(self):
         self.name = f"{self.name}-{self.env_name}-{str(uuid.uuid4())[:8]}"
+        if self.checkpoint_to_load is not None:
+            self.name = self.checkpoint_to_load
         if self.checkpoints_path is not None:
             self.checkpoints_path = os.path.join(self.checkpoints_path, self.name)
 
@@ -128,7 +135,7 @@ class SequenceManualPlanDataset(SequenceDataset):
     def create_plan(self, states):
         if self.plan_length:
             positions = states[:, :2]
-            path = np.array(simplify_path_to_target_points_by_distance(positions, self.path_length))[np.newaxis, :]
+            path = np.array(simplify_path_to_target_points_by_distance_log_scale(positions, self.path_length))[np.newaxis, :]
             path = pad_along_axis(path, pad_to=self.path_length, axis=1).reshape(-1, self.path_length * 2)
             return path
         else:
@@ -302,6 +309,7 @@ def eval_rollout(
         ep_id: int = 0,
         plan_bar_visualisation: bool = False,
         replanning_interval: int = 40,
+        record_video: bool = False
 ) -> Tuple[float, float, list, list, list, list, np.ndarray, tuple]:
     states = torch.zeros(1, pdt_model.episode_len + 1, pdt_model.state_dim, dtype=torch.float, device=device)
     actions = torch.zeros(1, pdt_model.episode_len, pdt_model.action_dim, dtype=torch.float, device=device)
@@ -346,11 +354,11 @@ def eval_rollout(
                 plan_path = plan_path.reshape(*plan_path.shape[:-1], -1, 2)
                 plan_paths.append(plan_path)
                 if plan_bar_visualisation:
-                    pt_frame = log_tensor_as_image(plan_path[-1].view(-1), f"plan_ep_{ep_id}",
+                    pt_frame = log_tensor_as_image(plan_path.view(-1), f"plan_ep_{ep_id}",
                                                    log_to_wandb=False)
                     pt_frames.append(pt_frame)
 
-        if ep_id < 3:
+        if record_video:
             render_frames.append(env.render(mode="rgb_array"))
         _, predicted_actions, attention_maps = pdt_model(
             goal,
@@ -439,7 +447,7 @@ def train(config: TrainConfig):
 
     scheduler = torch.optim.lr_scheduler.LambdaLR(
         optim,
-        lambda steps: min((steps + 1) / config.warmup_steps, 1),
+        lambda steps: 1 if config.checkpoint_to_load else min((steps + 1) / config.warmup_steps, 1),
     )
 
     # save config to the checkpoint
@@ -449,13 +457,19 @@ def train(config: TrainConfig):
         with open(os.path.join(config.checkpoints_path, "config.yaml"), "w") as f:
             pyrallis.dump(config, f)
 
+    if config.checkpoint_to_load:
+        checkpoint = torch.load(os.path.join(config.checkpoints_path, "pdt_checkpoint.pt"))
+        pdt_model.load_state_dict(checkpoint["pdt_model_state"])
+        # dataset.state_mean, dataset.state_std = checkpoint["state_mean"], checkpoint["state_std"]
+
     print(f"Total parameters (DT): {sum(p.numel() for p in pdt_model.parameters())}")
     trainloader_iter = iter(trainloader)
     first_batch = None
-    for step in trange(config.update_steps, desc="Training"):
+    step_start = config.update_steps if config.checkpoint_to_load else 0
+    for step in trange(step_start, config.update_steps+step_start, desc="Training"):
         # print(f"step {step} in train loop")
         batch = next(trainloader_iter)
-        if step == 0:
+        if step == step_start:
             first_batch = batch
         if step % config.eval_offline_every == 0:
             batch = first_batch
@@ -557,13 +571,15 @@ def train(config: TrainConfig):
                         device=config.device,
                         ep_id=ep_id,
                         plan_bar_visualisation=config.plan_bar_visualisation,
+                        record_video=config.record_video and ep_id < config.num_eval_videos,
                         replanning_interval=config.replanning_interval
                     )
-                    if ep_id < config.num_eval_videos:
+                    if ep_id < 3:
                         os.makedirs(video_folder, exist_ok=True)
                         arrays_to_video(attention_frames, f'{video_folder}/attention_t={step}-ep={ep_id}.mp4',
                                         scale_factor=5)
-                        arrays_to_video(render_frames, f'{video_folder}/render_t={step}-ep={ep_id}.mp4', scale_factor=1,
+                        if ep_id < config.num_eval_videos:
+                            arrays_to_video(render_frames, f'{video_folder}/render_t={step}-ep={ep_id}.mp4', scale_factor=1,
                                         use_grid=False)
                         if config.plan_length and config.plan_bar_visualisation:
                             arrays_to_video(plan_frames, f'{video_folder}/planning-token_t={step}-ep={ep_id}.mp4',
@@ -593,12 +609,12 @@ def train(config: TrainConfig):
                         {
                             f"eval/{target_return}_return_mean": np.mean(eval_returns),
                             # f"eval/{target_return}_return_std": np.std(eval_returns),
-                            # f"eval/{target_return}_normalized_score_mean": np.mean(
-                            #     normalized_scores
-                            # ),
-                            # f"eval/{target_return}_normalized_score_std": np.std(
-                            #     normalized_scores
-                            # ),
+                            f"eval/{target_return}_normalized_score_mean": np.mean(
+                                normalized_scores
+                            ),
+                            f"eval/{target_return}_normalized_score_std": np.std(
+                                normalized_scores
+                            ),
                             f"eval/{target_return}_goal_dist_mean": np.mean(eval_goal_dists),
                             f"eval/{target_return}_goal_dist_std": np.std(eval_goal_dists),
                         },
