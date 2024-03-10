@@ -1,18 +1,22 @@
-import torch
-import torchvision.utils as vutils
-import wandb
-from PIL import Image
+import io
+import math
+import os
+import pickle
+
+import cv2
 import matplotlib
 import numpy as np
-import io
-import cv2
-import pickle
-import os
+import torch
+import torchvision.utils as vutils
+from PIL import Image
+from scipy.spatial.transform import Rotation as R
 from shapely.geometry import LineString
-import math
+
+import wandb
 
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
+
 
 def log_attention_maps(attention_maps, log_key="attention_map_grid", log_to_wandb=True):
     num_layers = len(attention_maps)
@@ -51,6 +55,7 @@ def log_attention_maps(attention_maps, log_key="attention_map_grid", log_to_wand
 
     return maps
 
+
 def log_tensor_as_image(tensor, log_key="tensor_visualization", log_to_wandb=True):
     # Ensure the tensor is 1-dimensional
     if tensor.ndim != 1:
@@ -82,6 +87,7 @@ def log_tensor_as_image(tensor, log_key="tensor_visualization", log_to_wandb=Tru
         # Log the image to wandb
         wandb.log({log_key: wandb.Image(img)})
     return np.array(img)
+
 
 def create_grid(timesteps, dynamic_padding=True):
     num_images = len(timesteps)
@@ -116,29 +122,30 @@ def arrays_to_video(timesteps_arrays, output_file, scale_factor=1.0, fps=30.0, u
         # if the image has an alpha channel we'll remove it
         grid = grid[:, :, :3]
         # if we log arrays with shape 1 or 2 in the last dimension we need to add more channnels to bring it to 3
-        grid = np.concatenate((grid, np.zeros(grid.shape[:2] + (3 - grid.shape[2],),dtype=np.uint8)), axis=2)
+        grid = np.concatenate((grid, np.zeros(grid.shape[:2] + (3 - grid.shape[2],), dtype=np.uint8)), axis=2)
         frame = cv2.cvtColor(grid, cv2.COLOR_RGB2BGR)  # Convert color space
-        if scale_factor!=1: frame = cv2.resize(frame, video_size, interpolation=cv2.INTER_NEAREST)
+        if scale_factor != 1: frame = cv2.resize(frame, video_size, interpolation=cv2.INTER_NEAREST)
 
         # Calculate padding to center the frame in the video
         pad_width = (video_size[0] - frame.shape[1]) // 2
         pad_height = (video_size[1] - frame.shape[0]) // 2
 
         # Apply padding
-        if pad_width>0 or pad_height>0:
+        if pad_width > 0 or pad_height > 0:
             frame = cv2.copyMakeBorder(frame, pad_height, pad_height, pad_width, pad_width,
-                                          cv2.BORDER_CONSTANT, value=[0, 0, 0])
+                                       cv2.BORDER_CONSTANT, value=[0, 0, 0])
 
         out.write(frame)  # Write padded frame to the video
 
     out.release()  # Release the VideoWriter
 
 
-def normalise_maze_coords(X,mean,std):
-    return (np.array(X)-mean)/std
+def normalise_maze_coords(X, mean, std):
+    return (np.array(X) - mean) / std
+
 
 def plot_and_log_paths(image_path, start, goal, plan_paths, ant_path, output_folder, index, pos_mean, pos_std,
-                       log_to_wandb=True, save_data=True):
+                       log_to_wandb=True, save_data=True, orientation_path=None):
     # if the output folder doesn't exist make it
     os.makedirs(output_folder, exist_ok=True)
     # Load the background image
@@ -146,10 +153,10 @@ def plot_and_log_paths(image_path, start, goal, plan_paths, ant_path, output_fol
 
     # Create figure and axes
     fig, ax = plt.subplots()
-    tl, br = normalise_maze_coords([[-6,-6], [26,26]],pos_mean, pos_std)
-    ax.imshow(bg_image,extent=(tl[0],br[0],tl[1], br[1]))
+    tl, br = normalise_maze_coords([[-6, -6], [26, 26]], pos_mean, pos_std)
+    ax.imshow(bg_image, extent=(tl[0], br[0], tl[1], br[1]))
 
-    goal= np.array(goal)
+    goal = np.array(goal)
 
     # Mark start and goal
     ax.plot(start[0], start[1], 'go', markersize=10)  # Start in green
@@ -190,11 +197,82 @@ def plot_and_log_paths(image_path, start, goal, plan_paths, ant_path, output_fol
                 {'start': start, 'goal': goal, 'plan_paths': plan_paths, 'ant_path': ant_path, 'mean': pos_mean,
                  'std': pos_std}, f)
 
+
+def rotate_orientation_vectors(orientation):
+    rotation = R.from_euler('zyx', orientation, degrees=False)
+    forward = np.array([1, 0, 0])
+    up = np.array([0, 1, 0])
+    right = np.array([0, 0, 1])
+    return rotation.apply(forward), rotation.apply(up), rotation.apply(right)
+
+
+def plot_orientation_vectors(ax, position, forward_vector, up_vector, right_vector, length=0.5):
+    x, y, z = position
+    ax.quiver(x, y, z, forward_vector[0], forward_vector[1], forward_vector[2], color='red', length=length,
+              normalize=True)
+    ax.quiver(x, y, z, up_vector[0], up_vector[1], up_vector[2], color='green', length=length, normalize=True)
+    ax.quiver(x, y, z, right_vector[0], right_vector[1], right_vector[2], color='blue', length=length, normalize=True)
+
+
+def plot_and_log_paths_3d(image_path, start, goal, plan_paths, ant_path, orientation_path, output_folder, index,
+                          pos_mean, pos_std, log_to_wandb=True, save_data=True):
+    os.makedirs(output_folder, exist_ok=True)
+    bg_image = plt.imread(image_path)
+    fig, ax = plt.subplots(subplot_kw={'projection': '3d'},figsize=(12, 8))
+    ax.view_init(elev=70, azim=-90)
+
+    tl, br = normalise_maze_coords([[-6, -6], [26, 26]], pos_mean[:2], pos_std[:2])
+    ax.set_xlim(np.array([tl[0], br[0]])*0.5)
+    ax.set_ylim(np.array([tl[1], br[1]])*0.5)
+    ax.set_zlim([0, 2])
+
+    # X, Y = np.meshgrid(np.linspace(tl[0], br[0], bg_image.shape[1]), np.linspace(br[1], tl[1], bg_image.shape[0]))  # Use the reversed Y array here
+    # ax.plot_surface(X, Y, np.zeros(X.shape), rstride=1, cstride=1, facecolors=plt.imshow(bg_image).get_array(),
+    #                 shade=False)
+
+    ax.scatter(start[0], start[1], 1, s=100, c='yellow', marker='o')
+    ax.scatter(goal[0], goal[1], 1, s=100, c='silver', marker='*')
+
+    for plan_path in plan_paths:
+        if plan_path.shape[0]:
+            ax.plot(plan_path[:, 0], plan_path[:, 1], zs=1, zdir='z', marker='o', linewidth=2, markersize=4, alpha=0.5)
+
+    if ant_path is not None:
+        # Plot ant path in 3D with rainbow gradient
+        norm = plt.Normalize(0, 1)
+        cmap = plt.get_cmap('rainbow')
+        for i in range(len(ant_path) - 1):
+            ax.plot(ant_path[i:i + 2, 0], ant_path[i:i + 2, 1], zs=1, zdir='z',
+                    color=cmap(norm(i / (len(ant_path) - 1))), linewidth=2)
+
+    if orientation_path is not None:
+        for i, orientation in enumerate(orientation_path):
+            if (i%40 == 0 and i<len(orientation_path)//4) or i==len(orientation_path)-1:
+                forward_rot, up_rot, right_rot = rotate_orientation_vectors(orientation)
+                path = ant_path[i]
+                path[2] = 1
+                plot_orientation_vectors(ax, ant_path[i], forward_rot, up_rot, right_rot, length=0.4)
+
+    ax.axis('off')
+    output_path = os.path.join(output_folder, f"path_{index}_3D.png")
+    plt.savefig(output_path, bbox_inches='tight', transparent=True)
+    plt.close()
+
+    if log_to_wandb:
+        wandb.log({f"3D_path_{index}": wandb.Image(output_path)})
+
+    if save_data:
+        with open(os.path.join(output_folder, f"path_data_{index}.pkl"), 'wb') as f:
+            pickle.dump({'start': start, 'goal': goal, 'plan_paths': plan_paths, 'ant_path': ant_path,
+                         'orientation_path': orientation_path, 'mean': pos_mean, 'std': pos_std}, f)
+
+
 def adjust_path_points(simplified_points, target_points):
     while len(simplified_points) < target_points:
         # Find indices of the furthest consecutive points
         furthest_idx = max(range(len(simplified_points) - 1),
-                           key=lambda i: np.linalg.norm(np.array(simplified_points[i]) - np.array(simplified_points[i + 1])))
+                           key=lambda i: np.linalg.norm(
+                               np.array(simplified_points[i]) - np.array(simplified_points[i + 1])))
         # Insert a midpoint
         midpoint = tuple(np.mean([simplified_points[furthest_idx], simplified_points[furthest_idx + 1]], axis=0))
         simplified_points.insert(furthest_idx + 1, midpoint)
@@ -202,14 +280,15 @@ def adjust_path_points(simplified_points, target_points):
     while len(simplified_points) > target_points:
         # Find indices of the closest consecutive points
         closest_idx = min(range(len(simplified_points) - 1),
-                          key=lambda i: np.linalg.norm(np.array(simplified_points[i]) - np.array(simplified_points[i + 1])))
+                          key=lambda i: np.linalg.norm(
+                              np.array(simplified_points[i]) - np.array(simplified_points[i + 1])))
         # Remove one of the closest points
         del simplified_points[closest_idx]
 
-def simplify_path_to_target_points(path, target_num_points, tolerance_increment=0.2,debug=False):
+
+def simplify_path_to_target_points(path, target_num_points, tolerance_increment=0.2, debug=False):
     if len(path) < 2 or target_num_points >= len(path):
         return path
-
 
     # intial coarse simplify
     # path = simplify_path_to_target_points_fast(path, target_num_points*5)
@@ -239,8 +318,10 @@ def simplify_path_to_target_points(path, target_num_points, tolerance_increment=
 
     return simplified_points
 
+
 def simplify_path_to_target_points_fast(path, num_points):
     return np.array(path)[np.linspace(0, len(path) - 1, num_points, dtype=int)]
+
 
 def simplify_path_to_target_points_by_distance(path, num_points):
     path = np.array(path)

@@ -103,6 +103,7 @@ class TrainConfig:
 
     #other
     checkpoint_to_load: Optional[str] = None
+    checkpoint_step_to_load: Optional[int] = None
     eval_offline_every: int = 50
     eval_path_plot_every: int = 1000
 
@@ -297,7 +298,6 @@ class PlanningDecisionTransformer(DecisionTransformer):
 
         return out_plan, out_actions, attention_maps
 
-
 # Training and evaluation logic
 @torch.no_grad()
 def eval_rollout(
@@ -384,6 +384,23 @@ def eval_rollout(
 
         if done:
             break
+
+        # recent_states = states[0,step-29:step+1,:2]
+        # dist = torch.sum(torch.norm(torch.diff(recent_states, dim=0), dim=1))
+        # if step>100 and dist < 0.0005*30:
+        #     print(f"agent frozen. Distance last 25 states = {dist}")
+        #     # Pickle the numpy array
+        #     with open('debug_data.pickle', 'wb') as f:
+        #         pickle.dump({'states': states, 'actions': actions, 'plan': plan, 'returns': returns, 'step': step,
+        #                      'ep_id':ep_id}, f)
+        #     for i, img in enumerate(log_attention_maps(attention_maps, log_to_wandb=False)):
+        #         img = Image.fromarray(img).resize(tuple(np.array(img.shape[:2])*5), resample=Image.NEAREST)
+        #         img.save(f'debug_attention_map_{i}.png')
+        #
+        #     Image.fromarray(env.render(mode="rgb_array")).save("debug_render.png")
+        #
+        #     break
+
     ant_path = states[0, :int(episode_len + 1), :2].cpu().numpy()
     return episode_return, episode_len, attention_map_frames, render_frames, pt_frames, plan_paths, ant_path, \
         goal_unmodified
@@ -419,6 +436,7 @@ def train(config: TrainConfig):
         reward_scale=config.reward_scale,
         normalize_target=True
     )
+
     # DT model & optimizer & scheduler setup
     config.state_dim = eval_env.observation_space.shape[0]
     config.action_dim = eval_env.action_space.shape[0]
@@ -457,15 +475,19 @@ def train(config: TrainConfig):
         with open(os.path.join(config.checkpoints_path, "config.yaml"), "w") as f:
             pyrallis.dump(config, f)
 
+    step_start = 0
     if config.checkpoint_to_load:
-        checkpoint = torch.load(os.path.join(config.checkpoints_path, "pdt_checkpoint.pt"))
+        step = config.checkpoint_step_to_load
+        checkpoint = torch.load(os.path.join(config.checkpoints_path,f'pdt_checkpoint_step={step}.pt'))
         pdt_model.load_state_dict(checkpoint["pdt_model_state"])
         # dataset.state_mean, dataset.state_std = checkpoint["state_mean"], checkpoint["state_std"]
+        # step_start = checkpoint["steps"] if "steps" in checkpoint else config.update_steps
+        step_start = checkpoint["step"] if "step" in checkpoint else step
 
     print(f"Total parameters (DT): {sum(p.numel() for p in pdt_model.parameters())}")
     trainloader_iter = iter(trainloader)
     first_batch = None
-    step_start = config.update_steps if config.checkpoint_to_load else 0
+
     for step in trange(step_start, config.update_steps+step_start, desc="Training"):
         # print(f"step {step} in train loop")
         batch = next(trainloader_iter)
@@ -563,6 +585,7 @@ def train(config: TrainConfig):
                     if config.eval_seed == -1:
                         set_seed(range(config.eval_episodes)[ep_id] * 2, eval_env, deterministic_torch=False)
                     video_folder = f'./visualisations/PDTv2-oracle-plan/{config.env_name}/{config.run_name}'
+                    os.makedirs(video_folder, exist_ok=True)
                     eval_return, eval_len, attention_frames, render_frames, plan_frames, plan_paths, ant_path, goal = eval_rollout(
                         pdt_model=pdt_model,
                         env=eval_env,
@@ -574,16 +597,15 @@ def train(config: TrainConfig):
                         record_video=config.record_video and ep_id < config.num_eval_videos,
                         replanning_interval=config.replanning_interval
                     )
-                    if ep_id < 3:
-                        os.makedirs(video_folder, exist_ok=True)
+                    if len(attention_frames):
                         arrays_to_video(attention_frames, f'{video_folder}/attention_t={step}-ep={ep_id}.mp4',
-                                        scale_factor=5)
-                        if ep_id < config.num_eval_videos:
-                            arrays_to_video(render_frames, f'{video_folder}/render_t={step}-ep={ep_id}.mp4', scale_factor=1,
-                                        use_grid=False)
-                        if config.plan_length and config.plan_bar_visualisation:
-                            arrays_to_video(plan_frames, f'{video_folder}/planning-token_t={step}-ep={ep_id}.mp4',
-                                            scale_factor=1, fps=1, use_grid=False)
+                                    scale_factor=5)
+                    if ep_id < config.num_eval_videos:
+                        arrays_to_video(render_frames, f'{video_folder}/render_t={step}-ep={ep_id}.mp4', scale_factor=1,
+                                    use_grid=False)
+                    if config.plan_length and config.plan_bar_visualisation:
+                        arrays_to_video(plan_frames, f'{video_folder}/planning-token_t={step}-ep={ep_id}.mp4',
+                                        scale_factor=1, fps=1, use_grid=False)
                     # unscale for logging & correct normalized score computation
                     eval_returns.append(eval_return / config.reward_scale)
                     eval_goal_dists.append(np.linalg.norm(ant_path[-1] - goal))
@@ -622,13 +644,14 @@ def train(config: TrainConfig):
                     )
             pdt_model.train()
 
-        if config.checkpoints_path is not None:
-            checkpoint = {
-                "pdt_model_state": pdt_model.state_dict(),
-                "state_mean": dataset.state_mean,
-                "state_std": dataset.state_std,
-            }
-            torch.save(checkpoint, os.path.join(config.checkpoints_path, "pdt_checkpoint.pt"))
+            if config.checkpoints_path is not None:
+                checkpoint = {
+                    "pdt_model_state": pdt_model.state_dict(),
+                    "state_mean": dataset.state_mean,
+                    "state_std": dataset.state_std,
+                    "step": step
+                }
+                torch.save(checkpoint, os.path.join(config.checkpoints_path, f"pdt_checkpoint_step={step}.pt"))
 
 
 if __name__ == "__main__":

@@ -7,7 +7,7 @@ checkpoints_path: "./checkpoints/medium_diverse/PDT-oracle"
 clip_grad: 0.25
 deterministic_torch: false
 device: cuda
-embedding_dim: 128
+embedding_dim: 256
 embedding_dropout: 0 #0.1
 env_name: "antmaze-medium-diverse-v2"
 episode_len: 1000
@@ -18,7 +18,7 @@ group: "dt-antmaze-medium-PDT-oracle"
 learning_rate: 0.0004 #0.0001
 max_action: 1.0
 name: "PDT-oracle"
-num_heads: 2
+num_heads: 4
 num_layers: 3
 num_workers: 4
 project: "CORL"
@@ -33,7 +33,7 @@ weight_decay: 0.0001
 log_attn_weights: 1
 log_attn_every: 250
 record_video: 1
-run_name: "run_39"
+run_name: "run_40"
 plan_length: 1
 eval_offline_every: 5000
 bg_image: "./antmaze_medium_bg.png"
@@ -42,4 +42,6 @@ num_plan_points: 10
 plan_bar_visualisation: false
 replanning_interval: 80
 num_eval_videos: 1
-#checkpoint_to_load: "PDT-oracle-antmaze-medium-diverse-v2-fdf613aa"
+checkpoint_to_load: "PDT-oracle-antmaze-medium-diverse-v2-053c7cc1"
+checkpoint_step_to_load: 30000
+#checkpoint_to_load: "PDT-oracle-antmaze-medium-diverse-v2-a166a802"
