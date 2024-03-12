@@ -174,7 +174,7 @@ def plot_and_log_paths(image_path, start, goal, plan_paths, ant_path, output_fol
         # To create a gradient line, plot each segment in a loop with colors from the 'rainbow' colormap
         norm = plt.Normalize(0, 1)
         cmap = plt.get_cmap('rainbow')
-        for i in range(len(ant_path) - 1):
+        for i in range(len(ant_path)):
             plt.plot(ant_path[i:i + 2, 0], ant_path[i:i + 2, 1], color=cmap(norm(i / (len(ant_path) - 2))),
                      linewidth=2)
 
@@ -241,7 +241,7 @@ def plot_and_log_paths_3d(image_path, start, goal, plan_paths, ant_path, orienta
         # Plot ant path in 3D with rainbow gradient
         norm = plt.Normalize(0, 1)
         cmap = plt.get_cmap('rainbow')
-        for i in range(len(ant_path) - 1):
+        for i in range(len(ant_path)):
             ax.plot(ant_path[i:i + 2, 0], ant_path[i:i + 2, 1], zs=1, zdir='z',
                     color=cmap(norm(i / (len(ant_path) - 1))), linewidth=2)
 

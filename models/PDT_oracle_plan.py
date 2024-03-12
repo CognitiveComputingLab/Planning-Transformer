@@ -124,8 +124,10 @@ class SequenceManualPlanDataset(SequenceDataset):
         self.embedding_dim = embedding_dim
 
         traj_dists = np.array([self.traj_distance(traj) for traj in self.dataset])
+        # self.sample_prob = traj_dists / traj_dists.sum()
         self.sample_prob *= traj_dists / traj_dists.sum()
         self.sample_prob /= self.sample_prob.sum()
+        self.expected_cum_reward = np.array([traj['returns'][0]*p for traj,p in zip(self.dataset,self.sample_prob)]).sum()
         self.max_seq_length = max(self.info["traj_lens"])
 
     @staticmethod
@@ -147,8 +149,10 @@ class SequenceManualPlanDataset(SequenceDataset):
         # https://github.com/kzl/decision-transformer/blob/e2d82e68f330c00f763507b3b01d774740bee53f/gym/experiment.py#L128 # noqa
         goal = traj["goals"][0:1].astype(np.float32)
 
-        # Hindsight goal relabelling to improve trajectory quality
-        # goal = traj["observations"][-1:, :2]
+        # Hindsight goal relabelling only if the goal was actually achieved
+        # Relabelling all trajectories can cause it to learn that bad actions still reach the goal
+        # if traj["returns"][0:1]>0: goal = traj["observations"][-1:, :2]
+
         states = traj["observations"][start_idx: start_idx + self.seq_len]
         states_till_end = traj["observations"][start_idx:]
         actions = traj["actions"][start_idx: start_idx + self.seq_len]
@@ -173,7 +177,9 @@ class SequenceManualPlanDataset(SequenceDataset):
         if steps_till_end < self.max_seq_length:
             states_till_end = pad_along_axis(states_till_end, pad_to=self.max_seq_length)
 
-        return goal, states, actions, returns, time_steps, mask, plan, states_till_end, steps_till_end
+        weight = (traj["returns"][0]+self.reward_scale)/(self.expected_cum_reward+self.reward_scale)
+
+        return goal, states, actions, returns, time_steps, mask, plan, states_till_end, steps_till_end, weight
 
 
 def construct_sequence_with_goal_and_plan(goal, plan, rsa_sequence):
@@ -422,6 +428,7 @@ def train(config: TrainConfig):
         plan_length=config.plan_length,
         embedding_dim=config.embedding_dim
     )
+
     trainloader = DataLoader(
         dataset,
         batch_size=config.batch_size,
@@ -495,7 +502,7 @@ def train(config: TrainConfig):
             first_batch = batch
         if step % config.eval_offline_every == 0:
             batch = first_batch
-        goal, states, actions, returns, time_steps, mask, plan, states_till_end, steps_left = \
+        goal, states, actions, returns, time_steps, mask, plan, states_till_end, steps_left, return_weight = \
             [b.to(config.device) for b in batch]
         # True value indicates that the corresponding key value will be ignored
         padding_mask = ~mask.to(torch.bool)
@@ -509,12 +516,18 @@ def train(config: TrainConfig):
             time_steps=time_steps,
             plan=plan,  # Include planning tokens in the model's forward pass
             padding_mask=padding_mask,
-            log_attention=False
+            log_attention=False,
         )
 
-        plan_loss = F.mse_loss(predicted_plan, plan.detach(), reduction="mean")
+        # simple advantage weighting to encourage high return behaviour to be learnt
+        # return_weight = return_weight[:, np.newaxis, np.newaxis]
+        return_weight = 1.0
+
+        plan_loss = F.mse_loss(predicted_plan, plan.detach(),reduction="none")
+        plan_loss = (plan_loss * return_weight).mean()
         action_loss = F.mse_loss(predicted_actions, actions.detach(), reduction="none")
-        action_loss = (action_loss * mask.unsqueeze(-1)).mean()
+        action_loss = (action_loss * mask.unsqueeze(-1) * return_weight).mean()
+        # action_loss = (action_loss * mask.unsqueeze(-1)).mean()
         combined_loss = 0.5 * action_loss + 0.5 * plan_loss if config.plan_length else action_loss
         # Backpropagation and optimization for main model
 
@@ -569,6 +582,7 @@ def train(config: TrainConfig):
 
         # validation in the env for the actual online performance
         #  and step != 0
+        if step == 0: continue
         if (step % config.eval_every == 0) or (
                 step % config.eval_path_plot_every == 0) or step == config.update_steps - 1:
             if step % config.eval_path_plot_every == 0 and step % config.eval_every != 0:

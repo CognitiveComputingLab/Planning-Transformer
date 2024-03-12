@@ -1,5 +1,5 @@
 attention_dropout: 0.15 #0.1
-batch_size: 256 #64
+batch_size: 128 #64 #256
 betas:
 - 0.9
 - 0.999
@@ -11,11 +11,11 @@ embedding_dim: 128
 embedding_dropout: 0 #0.1
 env_name: "antmaze-medium-diverse-v2"
 episode_len: 1000
-eval_episodes: 10
+eval_episodes: 50 #15
 eval_every: 5000
 eval_seed: 42 #42 or -1 to seed every run the same
 group: "dt-antmaze-medium-PDT-oracle"
-learning_rate: 0.0004 #0.0001
+learning_rate: 0.0002 #0.0001 #0.004
 max_action: 1.0
 name: "PDT-oracle"
 num_heads: 2
@@ -24,16 +24,16 @@ num_workers: 4
 project: "CORL"
 residual_dropout: 0.15 #0.1
 reward_scale: 1.0
-seq_len: 40
+seq_len: 10
 target_returns: [1.0]
-train_seed: 15 #10
+train_seed: 16 #10
 update_steps: 100000
 warmup_steps: 10000
 weight_decay: 0.0001
 log_attn_weights: 1
 log_attn_every: 250
 record_video: 1
-run_name: "run_40"
+run_name: "run_62"
 plan_length: 1
 eval_offline_every: 5000
 bg_image: "./antmaze_medium_bg.png"
@@ -42,6 +42,16 @@ num_plan_points: 10
 plan_bar_visualisation: false
 replanning_interval: 80
 num_eval_videos: 1
-checkpoint_to_load: "PDT-oracle-antmaze-medium-diverse-v2-053c7cc1"
-checkpoint_step_to_load: 30000
+checkpoint_to_load: "PDT-oracle-antmaze-medium-diverse-v2-66e3aa73" # improved return weighting - the 1.0 run v2 (run 61)
+checkpoint_step_to_load: 80000
+#checkpoint_to_load: "PDT-oracle-antmaze-medium-diverse-v2-b8e52e53" # seq10, batch128 0.8667 w/0.377 dist
+#checkpoint_step_to_load: 30000
+#checkpoint_to_load: "PDT-oracle-antmaze-medium-diverse-v2-8fe284d8" # seq10 0.8667 w/0.27 dist
+#checkpoint_step_to_load: 10000
+#checkpoint_to_load: "PDT-oracle-antmaze-medium-diverse-v2-053c7cc1" # goal dist sample 0.8 w/0.22 dist
+#checkpoint_step_to_load: 30000
+#checkpoint_to_load: "PDT-oracle-antmaze-medium-diverse-v2-053c7cc1" # the 0.9 run with 0.39 dist (run 40)
+#checkpoint_step_to_load: 100000
+#checkpoint_to_load: "PDT-oracle-antmaze-medium-diverse-v2-01f5fc18" # the 1.0 run (run 44)
+#checkpoint_step_to_load: 25000
 #checkpoint_to_load: "PDT-oracle-antmaze-medium-diverse-v2-a166a802"
