@@ -32,9 +32,9 @@ def main(output_directory):
         # traj_idx = np.random.choice(len(ds.dataset), p=ds.sample_prob)
         # trajectory = ds.dataset[traj_idx]
         observations = traj['observations']
-        if len(observations) < 10: continue
+        if len(observations) < 20: continue
         goal = traj['goals'][0]
-        if traj["returns"][0:1] > 0: goal = observations[-1, :2]
+        # if traj["returns"][0:1] > 0: goal = observations[-1, :2]
         goal = DT.normalize_state(goal, mean[:2], std[:2])
         ant_path = DT.normalize_state(observations, mean, std)[:, :3]
         orientation_path = DT.normalize_state(observations, mean, std)[:, 3:6]
@@ -47,9 +47,9 @@ def main(output_directory):
         lengths.append(len(traj['returns']))
 
         # or np.linalg.norm(ant_path[-1, :2] - goal) < 0.5
-        if reached_goal:
-            # , plot_and_log_paths_3d
-            for i, plot_fn in enumerate([plot_and_log_paths]):
+        if not reached_goal:
+            for i, plot_fn in enumerate([plot_and_log_paths, plot_and_log_paths_3d]):
+                if i==0: continue
                 plot_fn(
                     image_path="antmaze_medium_bg.png",
                     start=start,

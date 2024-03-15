@@ -4,7 +4,7 @@ import argparse
 import re
 from tqdm import tqdm
 
-def resize_and_overlay(attention_path, render_path, output_path):
+def resize_and_overlay(attention_path, render_path, output_path, height_ratio):
     # Load videos
     attention_cap = cv2.VideoCapture(attention_path)
     render_cap = cv2.VideoCapture(render_path)
@@ -18,7 +18,7 @@ def resize_and_overlay(attention_path, render_path, output_path):
     # Calculate new dimensions for attention video
     attention_height = int(attention_cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
     attention_width = int(attention_cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-    new_height = int(render_height / 3)
+    new_height = int(render_height * height_ratio)
     new_width = int(attention_width * new_height / attention_height)
 
     # Create VideoWriter
@@ -53,19 +53,21 @@ def resize_and_overlay(attention_path, render_path, output_path):
     render_cap.release()
     out.release()
 
-def main(directory):
-    attention_files = [f for f in os.listdir(directory) if re.match(r'attention_t=\d+\.mp4', f)]
-    render_files = {re.search(r'(\d+)', f).group(0): f for f in os.listdir(directory) if re.match(r'render_t=\d+\.mp4', f)}
+def main(directory, height_ratio):
+    pattern = r'attention_(t=\d+-ep=\d+)\.mp4'
+    attention_files = {re.search(pattern, f).groups()[0]:f for f in os.listdir(directory) if re.match(pattern, f)}
+    pattern = r'render_(t=\d+-ep=\d+)\.mp4'
+    render_files = {re.search(pattern, f).groups()[0]: f for f in os.listdir(directory) if re.match(pattern, f)}
 
-    for attention_file in attention_files:
-        num = re.search(r'(\d+)', attention_file).group(0)
-        if num in render_files:
+    for suffix,attention_file in attention_files.items():
+        if suffix in render_files:
             resize_and_overlay(os.path.join(directory, attention_file),
-                               os.path.join(directory, render_files[num]),
-                               os.path.join(directory, f'combined_t={num}.mp4'))
+                               os.path.join(directory, render_files[suffix]),
+                               os.path.join(directory, f'combined_{suffix}.mp4'), height_ratio)
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Combine and resize videos.')
     parser.add_argument('directory', type=str, help='Directory containing videos')
+    parser.add_argument('--height_ratio', type=float, help='Ratio of attention video to render video height')
     args = parser.parse_args()
-    main(args.directory)
+    main(args.directory, args.height_ratio)
