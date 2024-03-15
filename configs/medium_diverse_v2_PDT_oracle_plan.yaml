@@ -11,9 +11,9 @@ embedding_dim: 128
 embedding_dropout: 0 #0.1
 env_name: "antmaze-medium-diverse-v2"
 episode_len: 1000
-eval_episodes: 50 #15
+eval_episodes: 100 #15
 eval_every: 5000
-eval_seed: 42 #42 or -1 to seed every run the same
+eval_seed: 43 #42 or -1 to seed every run the same
 group: "dt-antmaze-medium-PDT-oracle"
 learning_rate: 0.0002 #0.0001 #0.004
 max_action: 1.0
@@ -33,19 +33,25 @@ weight_decay: 0.0001
 log_attn_weights: 1
 log_attn_every: 250
 record_video: 1
-run_name: "run_62"
+run_name: "run_95"
 plan_length: 1
 eval_offline_every: 5000
 bg_image: "./antmaze_medium_bg.png"
 eval_path_plot_every: 2500
 num_plan_points: 10
 plan_bar_visualisation: false
-replanning_interval: 80
-num_eval_videos: 1
-checkpoint_to_load: "PDT-oracle-antmaze-medium-diverse-v2-66e3aa73" # improved return weighting - the 1.0 run v2 (run 61)
-checkpoint_step_to_load: 80000
-#checkpoint_to_load: "PDT-oracle-antmaze-medium-diverse-v2-b8e52e53" # seq10, batch128 0.8667 w/0.377 dist
-#checkpoint_step_to_load: 30000
+replanning_interval: 10 #80
+num_eval_videos: 0
+action_noise_scale: 0.7
+
+#checkpoint_to_load: "PDT-oracle-antmaze-medium-diverse-v2-36129aa0" # No plan
+#checkpoint_step_to_load: 70000
+#checkpoint_to_load: "PDT-oracle-antmaze-medium-diverse-v2-66e6774d" # debug the log distance, pos state
+#checkpoint_step_to_load: 99999
+#checkpoint_to_load: "PDT-oracle-antmaze-medium-diverse-v2-66e3aa73" # improved return weighting - the 1.0 run v2 (run 61)
+#checkpoint_step_to_load: 80000
+checkpoint_to_load: "PDT-oracle-antmaze-medium-diverse-v2-b8e52e53" # seq10, batch128 0.8667 w/0.377 dist (best, 0.96)
+checkpoint_step_to_load: 30000
 #checkpoint_to_load: "PDT-oracle-antmaze-medium-diverse-v2-8fe284d8" # seq10 0.8667 w/0.27 dist
 #checkpoint_step_to_load: 10000
 #checkpoint_to_load: "PDT-oracle-antmaze-medium-diverse-v2-053c7cc1" # goal dist sample 0.8 w/0.22 dist

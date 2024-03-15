@@ -1,0 +1,47 @@
+attention_dropout: 0.15 #0.1
+batch_size: 128 #64 #256
+betas:
+- 0.9
+- 0.999
+checkpoints_path: "./checkpoints/umaze/PDT-oracle"
+clip_grad: 0.25
+deterministic_torch: false
+device: cuda
+embedding_dim: 128
+embedding_dropout: 0 #0.1
+env_name: "antmaze-umaze-v2"
+episode_len: 1000
+eval_episodes: 15 #15
+eval_every: 5000
+eval_seed: 42 #42 or -1 to seed every run the same
+group: "dt-antmaze-umaze-PDT-oracle"
+learning_rate: 0.0002 #0.0001 #0.004
+max_action: 1.0
+name: "PDT-oracle"
+num_heads: 2
+num_layers: 3
+num_workers: 4
+project: "CORL"
+residual_dropout: 0.15 #0.1
+reward_scale: 1.0
+seq_len: 10
+target_returns: [1.0]
+train_seed: 16 #10
+update_steps: 100000
+warmup_steps: 10000
+weight_decay: 0.0001
+log_attn_weights: 1
+log_attn_every: 250
+record_video: 1
+run_name: "run_11"
+plan_length: 1
+eval_offline_every: 5000
+bg_image: "./antmaze_umaze_bg.png"
+eval_path_plot_every: 2500
+num_plan_points: 10
+plan_bar_visualisation: false
+replanning_interval: 10 #80
+num_eval_videos: 1
+use_return_weighting: 0
+eval_early_stop_step: 500
+#use_goal_relabelling: 1
