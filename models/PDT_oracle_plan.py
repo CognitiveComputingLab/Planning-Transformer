@@ -1,7 +1,6 @@
 """
 Modified version of the single file implementation of Decision transformer as provided by the CORL team
 """
-
 import warnings
 
 warnings.filterwarnings('ignore')
@@ -20,6 +19,7 @@ if os.getcwd() not in sys.path:
 import d4rl  # noqa
 from models.DT import *
 from models.utils import *
+from math import inf
 
 
 @dataclass
@@ -101,11 +101,16 @@ class TrainConfig:
     bg_image: str = "./antmaze_medium_bg.png"
     num_eval_videos: int = 3
 
-    #other
+    # other
     checkpoint_to_load: Optional[str] = None
     checkpoint_step_to_load: Optional[int] = None
     eval_offline_every: int = 50
     eval_path_plot_every: int = 1000
+    use_return_weighting: Optional[bool] = False
+    eval_early_stop_step: Optional[int] = inf
+    action_noise_scale: Optional[float] = 0.7
+    use_log_distance_plans: Optional[bool] = False
+    plan_max_trajectory_ratio: Optional[int] = 0.5
 
     def __post_init__(self):
         self.name = f"{self.name}-{self.env_name}-{str(uuid.uuid4())[:8]}"
@@ -117,7 +122,8 @@ class TrainConfig:
 
 class SequenceManualPlanDataset(SequenceDataset):
     def __init__(self, env_name: str, seq_len: int = 10, reward_scale: float = 1.0, path_length=10,
-                 plan_length: int = 1, embedding_dim: int = 128):
+                 plan_length: int = 1, embedding_dim: int = 128, use_log_distance: bool = True,
+                 plan_max_trajectory_ratio=0.5):
         super().__init__(env_name, seq_len, reward_scale)
         self.path_length = path_length
         self.plan_length = plan_length
@@ -127,8 +133,11 @@ class SequenceManualPlanDataset(SequenceDataset):
         # self.sample_prob = traj_dists / traj_dists.sum()
         self.sample_prob *= traj_dists / traj_dists.sum()
         self.sample_prob /= self.sample_prob.sum()
-        self.expected_cum_reward = np.array([traj['returns'][0]*p for traj,p in zip(self.dataset,self.sample_prob)]).sum()
-        self.max_seq_length = max(self.info["traj_lens"])
+        self.expected_cum_reward = np.array(
+            [traj['returns'][0] * p for traj, p in zip(self.dataset, self.sample_prob)]).sum()
+        self.max_traj_length = max(self.info["traj_lens"])
+        self.use_log_distance = use_log_distance
+        self.plan_max_trajectory_ratio = plan_max_trajectory_ratio
 
     @staticmethod
     def traj_distance(traj):
@@ -138,7 +147,8 @@ class SequenceManualPlanDataset(SequenceDataset):
     def create_plan(self, states):
         if self.plan_length:
             positions = states[:, :2]
-            path = np.array(simplify_path_to_target_points_by_distance_log_scale(positions, self.path_length))[np.newaxis, :]
+            simplify_fn = simplify_path_to_target_points_by_distance_log_scale if self.use_log_distance else simplify_path_to_target_points_by_distance
+            path = np.array(simplify_fn(positions, self.path_length))[np.newaxis, :]
             path = pad_along_axis(path, pad_to=self.path_length, axis=1).reshape(-1, self.path_length * 2)
             return path
         else:
@@ -155,15 +165,24 @@ class SequenceManualPlanDataset(SequenceDataset):
 
         states = traj["observations"][start_idx: start_idx + self.seq_len]
         states_till_end = traj["observations"][start_idx:]
+
+        # create the plan from the current state minus some random amount to at most half the max episode length
+        # we subtract this random amount to make sure eval doesn't go OOD when the start state doesn't match.
+        plan_states_start = max(0, start_idx + random.randint(-self.seq_len, 0))
+        plan_states_end = plan_states_start + int(self.max_traj_length * self.plan_max_trajectory_ratio) + 1
+        plan_states = traj["observations"][plan_states_start:plan_states_end]
+
         actions = traj["actions"][start_idx: start_idx + self.seq_len]
         returns = traj["returns"][start_idx: start_idx + self.seq_len]
         time_steps = np.arange(start_idx, start_idx + self.seq_len)
 
         states = normalize_state(states, self.state_mean, self.state_std)
         states_till_end = normalize_state(states_till_end, self.state_mean, self.state_std)
+        plan_states = normalize_state(plan_states, self.state_mean, self.state_std)
         goal = normalize_state(goal, self.state_mean[0:1, :2], self.state_std[0:1, :2])
         returns = returns * self.reward_scale
-        plan = self.create_plan(states_till_end).astype(np.float32)
+
+        plan = self.create_plan(plan_states).astype(np.float32)
         # pad up to seq_len if needed, padding is masked during training
         mask = np.hstack(
             [np.ones(states.shape[0]), np.zeros(self.seq_len - states.shape[0])]
@@ -174,10 +193,10 @@ class SequenceManualPlanDataset(SequenceDataset):
             returns = pad_along_axis(returns, pad_to=self.seq_len)
 
         steps_till_end = states_till_end.shape[0]
-        if steps_till_end < self.max_seq_length:
-            states_till_end = pad_along_axis(states_till_end, pad_to=self.max_seq_length)
+        if steps_till_end < self.max_traj_length:
+            states_till_end = pad_along_axis(states_till_end, pad_to=self.max_traj_length)
 
-        weight = (traj["returns"][0]+self.reward_scale)/(self.expected_cum_reward+self.reward_scale)
+        weight = (traj["returns"][0] + self.reward_scale) / (self.expected_cum_reward + self.reward_scale)
 
         return goal, states, actions, returns, time_steps, mask, plan, states_till_end, steps_till_end, weight
 
@@ -228,7 +247,7 @@ class PlanningDecisionTransformer(DecisionTransformer):
             ]
         )
         self.plan_length = plan_length
-        self.planning_head = nn.Sequential(nn.Linear(embedding_dim, plan_dim), nn.Tanh())
+        self.planning_head = nn.Linear(embedding_dim, plan_dim)
         self.plan_emb = nn.Linear(plan_dim, embedding_dim)
         self.plan_positional_emb = nn.Embedding(plan_length, embedding_dim)
         self.plan_dim = plan_dim
@@ -295,14 +314,15 @@ class PlanningDecisionTransformer(DecisionTransformer):
 
         out = self.out_norm(out)
 
-        # for input to the planning_head we use the sequence shiftted one to the left of the plan_sequence
+        # for input to the planning_head we use the sequence shifted one to the left of the plan_sequence
         out_plan = self.planning_head(out[:, 2: 2 + self.plan_length])
 
-        # predict actions only from state embeddings
+        # predict actions only from the state embeddings
         states = torch.cat([out[:, 2:3], out[:, (5 + self.plan_length)::3]], dim=1)
         out_actions = self.action_head(states) * self.max_action  # [batch_size, seq_len, action_dim]
 
         return out_plan, out_actions, attention_maps
+
 
 # Training and evaluation logic
 @torch.no_grad()
@@ -315,7 +335,9 @@ def eval_rollout(
         ep_id: int = 0,
         plan_bar_visualisation: bool = False,
         replanning_interval: int = 40,
-        record_video: bool = False
+        record_video: bool = False,
+        early_stop_step: int = inf,
+        action_noise_scale: float = 0.7
 ) -> Tuple[float, float, list, list, list, list, np.ndarray, tuple]:
     states = torch.zeros(1, pdt_model.episode_len + 1, pdt_model.state_dim, dtype=torch.float, device=device)
     actions = torch.zeros(1, pdt_model.episode_len, pdt_model.action_dim, dtype=torch.float, device=device)
@@ -337,7 +359,7 @@ def eval_rollout(
     print(goal_unmodified)
     goal = torch.tensor(goal_unmodified, dtype=torch.float32, device=device).unsqueeze(0).unsqueeze(0)
 
-    for step in range(pdt_model.episode_len):
+    for step in range(min(pdt_model.episode_len, early_stop_step)):
         # Generate the planning token every 20 steps (partial replanning)
         if step % replanning_interval == 0:
             plan = torch.zeros(1, plan_length, pdt_model.plan_dim, dtype=torch.float, device=device)
@@ -375,10 +397,13 @@ def eval_rollout(
             plan,
             log_attention=True
         )
-        predicted_action = predicted_actions[0, -1].cpu().numpy()
-        next_state, reward, done, info = env.step(predicted_action)
 
-        actions[:, step] = torch.as_tensor(predicted_action)
+        predicted_action = predicted_actions[0, -1].cpu().numpy()
+        action_noise = np.random.normal(size=predicted_action.shape, scale=action_noise_scale)
+
+        next_state, reward, done, info = env.step(predicted_action + action_noise)
+
+        actions[:, step] = torch.as_tensor(predicted_action + action_noise)
         states[:, step + 1] = torch.as_tensor(next_state)
         returns[:, step + 1] = torch.as_tensor(returns[:, step] - reward)
 
@@ -426,7 +451,8 @@ def train(config: TrainConfig):
         reward_scale=config.reward_scale,
         path_length=config.num_plan_points,
         plan_length=config.plan_length,
-        embedding_dim=config.embedding_dim
+        embedding_dim=config.embedding_dim,
+        use_log_distance=config.use_log_distance_plans,
     )
 
     trainloader = DataLoader(
@@ -485,7 +511,7 @@ def train(config: TrainConfig):
     step_start = 0
     if config.checkpoint_to_load:
         step = config.checkpoint_step_to_load
-        checkpoint = torch.load(os.path.join(config.checkpoints_path,f'pdt_checkpoint_step={step}.pt'))
+        checkpoint = torch.load(os.path.join(config.checkpoints_path, f'pdt_checkpoint_step={step}.pt'))
         pdt_model.load_state_dict(checkpoint["pdt_model_state"])
         # dataset.state_mean, dataset.state_std = checkpoint["state_mean"], checkpoint["state_std"]
         # step_start = checkpoint["steps"] if "steps" in checkpoint else config.update_steps
@@ -495,7 +521,7 @@ def train(config: TrainConfig):
     trainloader_iter = iter(trainloader)
     first_batch = None
 
-    for step in trange(step_start, config.update_steps+step_start, desc="Training"):
+    for step in trange(step_start, config.update_steps + step_start, desc="Training"):
         # print(f"step {step} in train loop")
         batch = next(trainloader_iter)
         if step == step_start:
@@ -520,10 +546,9 @@ def train(config: TrainConfig):
         )
 
         # simple advantage weighting to encourage high return behaviour to be learnt
-        # return_weight = return_weight[:, np.newaxis, np.newaxis]
-        return_weight = 1.0
+        return_weight = return_weight[:, np.newaxis, np.newaxis] if config.use_return_weighting else 1.0
 
-        plan_loss = F.mse_loss(predicted_plan, plan.detach(),reduction="none")
+        plan_loss = F.mse_loss(predicted_plan, plan.detach(), reduction="none")
         plan_loss = (plan_loss * return_weight).mean()
         action_loss = F.mse_loss(predicted_actions, actions.detach(), reduction="none")
         action_loss = (action_loss * mask.unsqueeze(-1) * return_weight).mean()
@@ -609,14 +634,16 @@ def train(config: TrainConfig):
                         ep_id=ep_id,
                         plan_bar_visualisation=config.plan_bar_visualisation,
                         record_video=config.record_video and ep_id < config.num_eval_videos,
-                        replanning_interval=config.replanning_interval
+                        replanning_interval=config.replanning_interval,
+                        early_stop_step=config.eval_early_stop_step,
+                        action_noise_scale=config.action_noise_scale
                     )
                     if len(attention_frames):
                         arrays_to_video(attention_frames, f'{video_folder}/attention_t={step}-ep={ep_id}.mp4',
-                                    scale_factor=5)
+                                        scale_factor=5)
                     if ep_id < config.num_eval_videos:
                         arrays_to_video(render_frames, f'{video_folder}/render_t={step}-ep={ep_id}.mp4', scale_factor=1,
-                                    use_grid=False)
+                                        use_grid=False)
                     if config.plan_length and config.plan_bar_visualisation:
                         arrays_to_video(plan_frames, f'{video_folder}/planning-token_t={step}-ep={ep_id}.mp4',
                                         scale_factor=1, fps=1, use_grid=False)
