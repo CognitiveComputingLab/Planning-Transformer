@@ -1,20 +1,23 @@
 import argparse
-from models.utils import plot_and_log_paths
-import os
+from models.utils import plot_and_log_paths, plot_and_log_paths_3d
+import os, sys
 import re
 import pickle
 from tqdm import tqdm
+
+if os.getcwd() not in sys.path:
+    sys.path.append(os.getcwd())
 def main(directory):
 
     path_data_files = [f for f in os.listdir(directory) if re.match(r'path_data_.+pkl', f)]
     for path_data_file in tqdm(path_data_files, "plotting paths"):
-        # if not "15000-ep=9" in path_data_file:
+        # if not "30000-ep=87" in path_data_file:
         #     continue
         with open(os.path.join(directory, path_data_file), 'rb') as f:
             data = pickle.load(f)
 
         plot_and_log_paths(
-            image_path="antmaze_medium_bg.png",
+            image_path="bg_images/antmaze_medium_bg.png",
             start = data['start'],
             goal = data['goal'],
             plan_paths = data['plan_paths'],
@@ -24,7 +27,8 @@ def main(directory):
             log_to_wandb=False,
             save_data=False,
             pos_mean=data['mean'],
-            pos_std=data['std']
+            pos_std=data['std'],
+            orientation_path=data['orientation_path']
         )
 
 if __name__ == "__main__":

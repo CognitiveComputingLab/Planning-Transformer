@@ -51,7 +51,7 @@ def main(output_directory):
             for i, plot_fn in enumerate([plot_and_log_paths, plot_and_log_paths_3d]):
                 if i==0: continue
                 plot_fn(
-                    image_path="antmaze_medium_bg.png",
+                    image_path="../bg_images/antmaze_medium_bg.png",
                     start=start,
                     goal=goal,
                     plan_paths=[],  # Assuming no planned paths here, adjust as needed

@@ -14,7 +14,8 @@ from shapely.geometry import LineString
 
 import wandb
 
-matplotlib.use('Agg')
+# matplotlib.use('Agg')
+matplotlib.use('QtAgg')
 import matplotlib.pyplot as plt
 
 
@@ -179,6 +180,15 @@ def plot_and_log_paths(image_path, start, goal, plan_paths, ant_path, output_fol
             plt.plot(ant_path[i:i + 2, 0], ant_path[i:i + 2, 1], color=cmap(norm(i / (len(ant_path) - 2))),
                      linewidth=2)
 
+    # print([(i, float(f"{rotate_orientation_vectors(o)[1][2]:.1f}")) for i,o in enumerate(orientation_path)])
+    if orientation_path is not None:
+        orientation = orientation_path[-1]
+        forward_rot, up_rot, right_rot = rotate_orientation_vectors(orientation)
+        has_fallen = up_rot[2]<0.25
+        print(up_rot, has_fallen)
+        if has_fallen:
+            ax.scatter(ant_path[-1][0], ant_path[-1][1], s=100, c='yellow', marker='x', zorder=5)  # mark that it fell
+
     # Remove axes for better visualization
     ax.axis('off')
 
@@ -196,23 +206,23 @@ def plot_and_log_paths(image_path, start, goal, plan_paths, ant_path, output_fol
         with open(os.path.join(output_folder, f"path_data_{index}.pkl"), 'wb') as f:
             pickle.dump(
                 {'start': start, 'goal': goal, 'plan_paths': plan_paths, 'ant_path': ant_path, 'mean': pos_mean,
-                 'std': pos_std}, f)
+                 'std': pos_std, 'orientation_path': orientation_path}, f)
 
 
 def rotate_orientation_vectors(orientation):
-    rotation = R.from_euler('zyx', orientation, degrees=False)
-    forward = np.array([1, 0, 0])
-    up = np.array([0, 1, 0])
-    right = np.array([0, 0, 1])
+
+    rotation = R.from_euler("zyx", orientation[:3], degrees=False)
+    right = np.array([1, 0, 0])
+    forward = np.array([0, 1, 0])
+    up = np.array([0, 0, 1])
     return rotation.apply(forward), rotation.apply(up), rotation.apply(right)
 
 
 def plot_orientation_vectors(ax, position, forward_vector, up_vector, right_vector, length=0.5):
     x, y, z = position
-    ax.quiver(x, y, z, forward_vector[0], forward_vector[1], forward_vector[2], color='red', length=length,
-              normalize=True)
-    ax.quiver(x, y, z, up_vector[0], up_vector[1], up_vector[2], color='green', length=length, normalize=True)
-    ax.quiver(x, y, z, right_vector[0], right_vector[1], right_vector[2], color='blue', length=length, normalize=True)
+    ax.quiver(x, y, z, forward_vector[0], forward_vector[1], forward_vector[2], color='red', length=length)
+    ax.quiver(x, y, z, up_vector[0], up_vector[1], up_vector[2], color='green', length=length)
+    ax.quiver(x, y, z, right_vector[0], right_vector[1], right_vector[2], color='blue', length=length)
 
 
 def plot_and_log_paths_3d(image_path, start, goal, plan_paths, ant_path, orientation_path, output_folder, index,
@@ -220,12 +230,18 @@ def plot_and_log_paths_3d(image_path, start, goal, plan_paths, ant_path, orienta
     os.makedirs(output_folder, exist_ok=True)
     bg_image = plt.imread(image_path)
     fig, ax = plt.subplots(subplot_kw={'projection': '3d'},figsize=(12, 8))
-    ax.view_init(elev=70, azim=-90)
+    ax.view_init(elev=60, azim=-45)
 
     tl, br = normalise_maze_coords([[-6, -6], [26, 26]], pos_mean[:2], pos_std[:2])
     ax.set_xlim(np.array([tl[0], br[0]])*0.5)
     ax.set_ylim(np.array([tl[1], br[1]])*0.5)
     ax.set_zlim([0, 2])
+
+    ax.set_xlabel('X')
+    ax.set_ylabel('Y')
+    ax.set_zlabel('Z')
+
+    # Display the plot
 
     # X, Y = np.meshgrid(np.linspace(tl[0], br[0], bg_image.shape[1]), np.linspace(br[1], tl[1], bg_image.shape[0]))  # Use the reversed Y array here
     # ax.plot_surface(X, Y, np.zeros(X.shape), rstride=1, cstride=1, facecolors=plt.imshow(bg_image).get_array(),
@@ -248,15 +264,15 @@ def plot_and_log_paths_3d(image_path, start, goal, plan_paths, ant_path, orienta
 
     if orientation_path is not None:
         for i, orientation in enumerate(orientation_path):
-            if (i%40 == 0 and i<len(orientation_path)//4) or i==len(orientation_path)-1:
+            if (i%40 == 0 and i<len(orientation_path)//2) or i==len(orientation_path)-1:
                 forward_rot, up_rot, right_rot = rotate_orientation_vectors(orientation)
-                path = ant_path[i]
-                path[2] = 1
-                plot_orientation_vectors(ax, ant_path[i], forward_rot, up_rot, right_rot, length=0.4)
+                point = np.concatenate((ant_path[i][:2], np.array([1])))
+                plot_orientation_vectors(ax, point, forward_rot, up_rot, right_rot, length=0.4)
 
-    ax.axis('off')
+    # ax.axis('off')
     output_path = os.path.join(output_folder, f"path_{index}_3D.png")
     plt.savefig(output_path, bbox_inches='tight', transparent=True)
+    plt.show()
     plt.close()
 
     if log_to_wandb:
