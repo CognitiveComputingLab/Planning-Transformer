@@ -20,6 +20,7 @@ import d4rl  # noqa
 from models.DT import *
 from models.utils import *
 from math import inf
+from typing import Callable
 
 
 @dataclass
@@ -128,13 +129,14 @@ class TrainConfig:
 class SequenceManualPlanDataset(SequenceDataset):
     def __init__(self, env_name: str, seq_len: int = 10, reward_scale: float = 1.0, path_length=10,
                  embedding_dim: int = 128, use_log_distance: bool = True, plan_max_trajectory_ratio=0.5,
-                 plan_type: str = "combined", plan_use_full_state: bool=False):
+                 plan_type: str = "combined", plan_use_full_state: bool = False):
         super().__init__(env_name, seq_len, reward_scale)
         self.path_length = path_length
 
-        self.plan_length = 10 if plan_type == "split" else 1 if plan_type == "combined" else 0
-        self.plan_dim = (1 if plan_type == "split" else self.path_length if plan_type == "combined" else 0)
-        self.plan_dim *= self.state_mean.shape[0] if plan_use_full_state else 2
+        self.plan_length = self.path_length if plan_type == "split" else 1 if plan_type == "combined" else 0
+        self.path_dim = self.state_mean.shape[1] if plan_use_full_state else 2
+        self.plan_dim = ( 1 if plan_type == "split" else self.path_length if plan_type == "combined" else 0)\
+                        * self.path_dim
         self.plan_type = plan_type
         self.plan_use_full_state = plan_use_full_state
 
@@ -156,19 +158,26 @@ class SequenceManualPlanDataset(SequenceDataset):
 
     def create_plan(self, states):
         if self.plan_length:
-            positions = states[:, :2]
+            positions = states[:, :self.plan_dim]
             simplify_fn = simplify_path_to_target_points_by_distance_log_scale if self.use_log_distance else \
                 simplify_path_to_target_points_by_distance
             path = np.array(simplify_fn(positions, self.path_length))
             if self.plan_type == "combined":
                 path = pad_along_axis(path[np.newaxis, :], pad_to=self.path_length, axis=1)
-                path = path.reshape(-1, self.path_length * 2)
+                path = path.reshape(-1, self.plan_dim)
             else:
                 path = pad_along_axis(path, pad_to=self.plan_length, axis=0)
         else:
             path = np.empty((0, self.plan_dim))
 
         return path
+
+    def convert_plan_to_path(self, plan):
+        if self.plan_type == "combined":
+            plan = plan[0]
+            return plan.reshape(*plan.shape[:-1], -1, self.path_dim)
+        else:
+            return plan[:, :self.path_dim]
 
     def _prepare_sample(self, traj_idx, start_idx):
         traj = self.dataset[traj_idx]
@@ -345,6 +354,7 @@ class PlanningDecisionTransformer(DecisionTransformer):
 def eval_rollout(
         pdt_model: PlanningDecisionTransformer,
         env: gym.Env,
+        convert_plan_to_path: Callable,
         target_return: float,
         plan_length: int,
         device: str = "gpu",
@@ -355,7 +365,7 @@ def eval_rollout(
         early_stop_step: int = inf,
         action_noise_scale: float = 0.7,
         state_noise_scale: float = 0.1,
-        num_eps_with_logged_attention: int = 3
+        num_eps_with_logged_attention: int = 3,
 ) -> Tuple[float, float, list, list, list, list, np.ndarray, tuple]:
     states = torch.zeros(1, pdt_model.episode_len + 1, pdt_model.state_dim, dtype=torch.float, device=device)
     actions = torch.zeros(1, pdt_model.episode_len, pdt_model.action_dim, dtype=torch.float, device=device)
@@ -393,12 +403,12 @@ def eval_rollout(
                     plan=plan[:, :plan_token_i],
                     log_attention=False
                 )
-                plan[:, plan_token_i] = pred_plan[0, -1]
+                plan[:, plan_token_i] = pred_plan[0, plan_token_i]
 
             if plan_length:
-                plan_path = plan[0][0].detach().cpu()
+                plan_path = plan[0].detach().cpu()
                 # Unflatten the last axis, so we have a 2D path
-                plan_path = plan_path.reshape(*plan_path.shape[:-1], -1, 2)
+                plan_path = convert_plan_to_path(plan_path)
                 plan_paths.append(plan_path)
                 if plan_bar_visualisation:
                     pt_frame = log_tensor_as_image(plan_path.view(-1), f"plan_ep_{ep_id}",
@@ -422,11 +432,11 @@ def eval_rollout(
         attention_map_all_raw.append(np.array([x.cpu() for x in attention_maps]))
         predicted_action = predicted_actions[0, -1].cpu().numpy()
 
-        if step < pdt_model.seq_len+1:
+        if step < pdt_model.seq_len + 1:
             noise = 0.0
         else:
-            attention_map_dist = np.linalg.norm(attention_map_all_raw[-1]-attention_map_all_raw[-2])
-            noise = min(1.0, max(action_noise_scale, (attention_map_dist - 3.5)/(2.5-3.5)))
+            attention_map_dist = np.linalg.norm(attention_map_all_raw[-1] - attention_map_all_raw[-2])
+            noise = min(1.0, max(action_noise_scale, (attention_map_dist - 3.5) / (2.5 - 3.5)))
 
         # action_noise = np.random.normal(size=predicted_action.shape, scale=action_noise_scale)
         action_noise = np.random.normal(size=predicted_action.shape, scale=noise)
@@ -444,7 +454,6 @@ def eval_rollout(
 
         if ep_id < num_eps_with_logged_attention:
             attention_map_frames.append(log_attention_maps(attention_maps, log_to_wandb=False))
-
 
         if done:
             break
@@ -615,9 +624,9 @@ def train(config: TrainConfig):
                 paths = []
                 if dataset.plan_length:
                     # select batch_index of the batch and first of the plan sequence
-                    for i, path in enumerate([predicted_plan, plan]):
-                        transformed_path = path[batch_index, 0].detach().cpu()
-                        paths.append(transformed_path.reshape(*transformed_path.shape[:-1], -1, 2))
+                    for i, plan_instance in enumerate([predicted_plan, plan]):
+                        plan_instance = plan_instance[batch_index].detach().cpu()
+                        paths.append(dataset.convert_plan_to_path(plan_instance))
 
                 # for all variables we use the first of the batch
                 plot_and_log_paths(
@@ -665,6 +674,7 @@ def train(config: TrainConfig):
                     eval_return, eval_len, attention_frames, render_frames, plan_frames, plan_paths, ant_path, goal = eval_rollout(
                         pdt_model=pdt_model,
                         env=eval_env,
+                        convert_plan_to_path=dataset.convert_plan_to_path,
                         target_return=target_return * config.reward_scale,
                         plan_length=dataset.plan_length,
                         device=config.device,

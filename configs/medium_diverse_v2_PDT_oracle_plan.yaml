@@ -11,7 +11,7 @@ embedding_dim: 128
 embedding_dropout: 0 #0.1
 env_name: "antmaze-medium-diverse-v2"
 episode_len: 1000
-eval_episodes: 100 #15
+eval_episodes: 15 #15
 eval_every: 5000
 eval_seed: 43 #42 or -1 to seed every run the same
 group: "dt-antmaze-medium-PDT-oracle"
@@ -33,24 +33,25 @@ weight_decay: 0.0001
 log_attn_weights: 1
 log_attn_every: 250
 record_video: 1
-run_name: "run_98"
+run_name: "run_101"
 eval_offline_every: 5000
 bg_image: "./bg_images/antmaze_medium_bg.png"
 eval_path_plot_every: 2500
 num_plan_points: 10
 plan_bar_visualisation: false
 replanning_interval: 10 #80
-num_eval_videos: 0
+num_eval_videos: 1
 action_noise_scale: 0.7
 use_log_distance_plans: true # true
 plan_max_trajectory_ratio: 0.5 # 0.5
 state_noise_scale: 0.0 # 0.0
 plan_type: "split"
-plan_use_full_state: false
+plan_use_full_state: true
 
+#checkpoint_to_load: "PDT-oracle-antmaze-medium-diverse-v2-c434a818" # multitoken
+#checkpoint_step_to_load: 99999
 #checkpoint_to_load: "PDT-oracle-antmaze-medium-diverse-v2-95145aa6" # fixed plan head
 #checkpoint_step_to_load: 30000
-
 #checkpoint_to_load: "PDT-oracle-antmaze-medium-diverse-v2-36129aa0" # No plan
 #checkpoint_step_to_load: 70000
 #checkpoint_to_load: "PDT-oracle-antmaze-medium-diverse-v2-66e6774d" # debug the log distance, pos state

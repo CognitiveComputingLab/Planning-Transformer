@@ -66,11 +66,11 @@ def log_tensor_as_image(tensor, log_key="tensor_visualization", log_to_wandb=Tru
     np_tensor = tensor.numpy()
 
     # Normalize the tensor for better color mapping
-    norm_tensor = (np_tensor - np.min(np_tensor)) / (np.max(np_tensor) - np.min(np_tensor))
+    # np_tensor = (np_tensor - np.min(np_tensor)) / (np.max(np_tensor) - np.min(np_tensor))
 
     # Create a bar plot
     fig, ax = plt.subplots()
-    ax.bar(range(len(norm_tensor)), np.ones_like(norm_tensor), color=plt.cm.viridis(norm_tensor))
+    ax.bar(range(len(np_tensor)), np.ones_like(np_tensor), color=plt.cm.viridis(np_tensor))
 
     # Remove axes for cleaner visualization
     ax.axis('off')
