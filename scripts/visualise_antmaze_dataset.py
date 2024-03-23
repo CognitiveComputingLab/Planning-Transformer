@@ -6,7 +6,7 @@ import torch
 from models.utils import plot_and_log_paths, plot_and_log_paths_3d, log_tensor_as_image
 
 sys.path.append("models.utils")
-from models import DT, PDT_oracle_plan
+from models import DT, PDT
 import numpy as np
 from PIL import Image
 import os
