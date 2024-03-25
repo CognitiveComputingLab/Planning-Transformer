@@ -114,6 +114,7 @@ class TrainConfig:
     use_log_distance_plans: Optional[bool] = False
     plan_max_trajectory_ratio: Optional[int] = 0.5
     state_noise_scale: Optional[float] = 0.0
+    use_two_phase_training: Optional[bool] = False
 
     def __post_init__(self):
         self.name = f"{self.name}-{self.env_name}-{str(uuid.uuid4())[:8]}"
@@ -135,7 +136,7 @@ class SequenceManualPlanDataset(SequenceDataset):
 
         self.plan_length = self.path_length if plan_type == "split" else 1 if plan_type == "combined" else 0
         self.path_dim = self.state_mean.shape[1] if plan_use_full_state else 2
-        self.plan_dim = ( 1 if plan_type == "split" else self.path_length if plan_type == "combined" else 0)\
+        self.plan_dim = (1 if plan_type == "split" else self.path_length if plan_type == "combined" else 0) \
                         * self.path_dim
         self.plan_type = plan_type
         self.plan_use_full_state = plan_use_full_state
@@ -248,6 +249,7 @@ class PlanningDecisionTransformer(DecisionTransformer):
                  attention_dropout: float = 0.0,
                  residual_dropout: float = 0.0,
                  plan_length: int = 1,
+                 use_two_phase_training: bool = False,
                  **kwargs
                  ):
         super().__init__(state_dim, action_dim,
@@ -276,6 +278,7 @@ class PlanningDecisionTransformer(DecisionTransformer):
         self.plan_emb = nn.Linear(plan_dim, embedding_dim)
         self.plan_positional_emb = nn.Embedding(plan_length, embedding_dim)
         self.plan_dim = plan_dim
+        self.use_two_phase_training = use_two_phase_training
         # Create position IDs for plan once
         self.register_buffer('plan_position_ids', torch.arange(0, self.plan_length).unsqueeze(0))
 
@@ -288,65 +291,68 @@ class PlanningDecisionTransformer(DecisionTransformer):
 
         # [batch_size, seq_len, emb_dim]
         time_emb = self.timestep_emb(time_steps)
-        plan_pos_emb = self.plan_positional_emb(self.plan_position_ids[:, :plan.shape[1]])
         state_emb_no_time_emb = self.state_emb(states)
         state_emb = state_emb_no_time_emb + time_emb
         act_emb = self.action_emb(actions) + time_emb
         returns_emb = self.return_emb(returns_to_go.unsqueeze(-1)) + time_emb
-        plan_emb = self.plan_emb(plan) + plan_pos_emb if self.plan_length else \
-            torch.empty(batch_size, 0, self.embedding_dim, device=device)
+        for training_phase in range(self.use_two_phase_training + 1):
+            plan_pos_emb = self.plan_positional_emb(self.plan_position_ids[:, :plan.shape[1]])
+            plan_emb = self.plan_emb(plan) + plan_pos_emb if self.plan_length else \
+                torch.empty(batch_size, 0, self.embedding_dim, device=device)
 
-        # handle goal
-        # we do this inserting the goal into the state, embedding it then subtracting the state embedding
-        # we detatch the state embedding to prevent co-dependency during backprop
-        goal_modified_state_0 = torch.cat((goal, states[:, 0:1, 2:].clone().detach()), dim=-1)
-        goal_token = (self.state_emb(goal_modified_state_0) - state_emb_no_time_emb[:, 0:1, :]).detach()
+            # handle goal
+            # we do this inserting the goal into the state, embedding it then subtracting the state embedding
+            # we detatch the state embedding to prevent co-dependency during backprop
+            goal_modified_state_0 = torch.cat((goal, states[:, 0:1, 2:].clone().detach()), dim=-1)
+            goal_token = (self.state_emb(goal_modified_state_0) - state_emb_no_time_emb[:, 0:1, :]).detach()
 
-        # [batch_size, seq_len * 3, emb_dim], (r_0, s_0, a_0, r_1, s_1, a_1, ...)
-        sequence = (
-            torch.stack([returns_emb, state_emb, act_emb], dim=1)
-            .permute(0, 2, 1, 3)
-            .reshape(batch_size, 3 * seq_len, self.embedding_dim)
-        )
-        # convert to form (goal, r_0, s_0, p_0, p1, ..., p_n, a_0, r_1, s_1, a_1, ...)
-        sequence = construct_sequence_with_goal_and_plan(goal_token, plan_emb, sequence)
-
-        if padding_mask is not None:
-            # [batch_size, seq_len * 3], stack mask identically to fit the sequence
-            padding_mask = (
-                torch.stack([padding_mask, padding_mask, padding_mask], dim=1)
-                .permute(0, 2, 1)
-                .reshape(batch_size, 3 * seq_len)
+            # [batch_size, seq_len * 3, emb_dim], (r_0, s_0, a_0, r_1, s_1, a_1, ...)
+            sequence = (
+                torch.stack([returns_emb, state_emb, act_emb], dim=1)
+                .permute(0, 2, 1, 3)
+                .reshape(batch_size, 3 * seq_len, self.embedding_dim)
             )
-            # account for the planning token in the mask
-            # True values in the mask mean don't attend to, so we use zeroes so the plan and goal are always attended to
-            plan_mask = torch.zeros(batch_size, self.plan_length, dtype=torch.bool,
-                                    device=device)
-            goal_mask = torch.zeros(batch_size, 1, dtype=torch.bool,
-                                    device=device)
+            # convert to form (goal, r_0, s_0, p_0, p1, ..., p_n, a_0, r_1, s_1, a_1, ...)
+            sequence = construct_sequence_with_goal_and_plan(goal_token, plan_emb, sequence)
+            padding_mask_full = None
+            if padding_mask is not None:
+                # [batch_size, seq_len * 3], stack mask identically to fit the sequence
+                padding_mask_full = (
+                    torch.stack([padding_mask, padding_mask, padding_mask], dim=1)
+                    .permute(0, 2, 1)
+                    .reshape(batch_size, 3 * seq_len)
+                )
+                # account for the planning token in the mask
+                # True values in the mask mean don't attend to, so we use zeroes so the plan and goal are always attended to
+                plan_mask = torch.zeros(batch_size, self.plan_length, dtype=torch.bool,
+                                        device=device)
+                goal_mask = torch.zeros(batch_size, 1, dtype=torch.bool,
+                                        device=device)
 
-            padding_mask = construct_sequence_with_goal_and_plan(goal_mask, plan_mask, padding_mask)
-        # LayerNorm and Dropout (!!!) as in original implementation,
-        # while minGPT & huggingface uses only embedding dropout
-        out = self.emb_norm(sequence)
-        out = self.emb_drop(out)
+                padding_mask_full = construct_sequence_with_goal_and_plan(goal_mask, plan_mask, padding_mask_full)
 
-        # for some interpretability lets get the attention maps
-        attention_maps = []
-        for i, block in enumerate(self.blocks):
-            out, attn_weights = block(out, padding_mask=padding_mask, log_attention=log_attention)
-            attention_maps.append(attn_weights)
+            # LayerNorm and Dropout (!!!) as in original implementation,
+            # while minGPT & huggingface uses only embedding dropout
+            out = self.emb_norm(sequence)
+            out = self.emb_drop(out)
 
-        out = self.out_norm(out)
+            # for some interpretability lets get the attention maps
+            attention_maps = []
+            for i, block in enumerate(self.blocks):
+                out, attn_weights = block(out, padding_mask=padding_mask_full, log_attention=log_attention)
+                attention_maps.append(attn_weights)
 
-        # for input to the planning_head we use the sequence shifted one to the left of the plan_sequence
-        out_plan = self.planning_head(out[:, 2: 2 + self.plan_length])
+            out = self.out_norm(out)
 
-        # predict actions only from the state embeddings
-        states = torch.cat([out[:, 2:3], out[:, (5 + self.plan_length)::3]], dim=1)
-        out_actions = self.action_head(states) * self.max_action  # [batch_size, seq_len, action_dim]
+            if training_phase == 0:
+                # for input to the planning_head we use the sequence shifted one to the left of the plan_sequence
+                plan = self.planning_head(out[:, 2: 2 + self.plan_length])
+            if training_phase == self.use_two_phase_training:
+                # predict actions only from the state embeddings
+                out_states = torch.cat([out[:, 2:3], out[:, (5 + self.plan_length)::3]], dim=1)
+                out_actions = self.action_head(out_states) * self.max_action  # [batch_size, seq_len, action_dim]
 
-        return out_plan, out_actions, attention_maps
+        return plan, out_actions, attention_maps
 
 
 # Training and evaluation logic
@@ -534,6 +540,7 @@ def train(config: TrainConfig):
         embedding_dropout=config.embedding_dropout,
         max_action=config.max_action,
         plan_length=dataset.plan_length,
+        use_two_phase_training=config.use_two_phase_training
     ).to(config.device)
 
     optim = torch.optim.AdamW(
@@ -653,7 +660,7 @@ def train(config: TrainConfig):
         )
 
         # validation in the env for the actual online performance
-        # if step == 0: continue
+        if step == 0: continue
         if (step % config.eval_every == 0) or (
                 step % config.eval_path_plot_every == 0) or step == config.update_steps - 1:
             if step % config.eval_path_plot_every == 0 and step % config.eval_every != 0:
