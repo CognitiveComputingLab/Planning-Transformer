@@ -3,6 +3,8 @@ Modified version of the single file implementation of Decision transformer as pr
 """
 import warnings
 
+import numpy as np
+
 warnings.filterwarnings('ignore')
 warnings.filterwarnings('ignore', category=DeprecationWarning, module='numpy.*')
 
@@ -17,6 +19,7 @@ if os.getcwd() not in sys.path:
 # concatenated
 
 import d4rl  # noqa
+from d4rl.kitchen import kitchen_envs
 from models.DT import *
 from models.utils import *
 from math import inf
@@ -115,6 +118,8 @@ class TrainConfig:
     plan_max_trajectory_ratio: Optional[int] = 0.5
     state_noise_scale: Optional[float] = 0.0
     use_two_phase_training: Optional[bool] = False
+    is_goal_conditioned: Optional[bool] = False
+    goal_indices: Optional[Tuple[int, ...]] = (0,1)
 
     def __post_init__(self):
         self.name = f"{self.name}-{self.env_name}-{str(uuid.uuid4())[:8]}"
@@ -130,14 +135,15 @@ class TrainConfig:
 class SequenceManualPlanDataset(SequenceDataset):
     def __init__(self, env_name: str, seq_len: int = 10, reward_scale: float = 1.0, path_length=10,
                  embedding_dim: int = 128, use_log_distance: bool = True, plan_max_trajectory_ratio=0.5,
-                 plan_type: str = "combined", plan_use_full_state: bool = False):
+                 plan_type: str = "combined", plan_use_full_state: bool = False, is_goal_conditioned: bool = False):
         super().__init__(env_name, seq_len, reward_scale)
         self.path_length = path_length
 
+        self.is_gc = is_goal_conditioned # dataset depends on whether reward conditioned (rc) or goal conditioned (gc)
         self.plan_length = self.path_length if plan_type == "split" else 1 if plan_type == "combined" else 0
         self.path_dim = self.state_mean.shape[1] if plan_use_full_state else 2
         self.plan_dim = (1 if plan_type == "split" else self.path_length if plan_type == "combined" else 0) \
-                        * self.path_dim
+                        * (self.path_dim + (not self.is_gc))
         self.plan_type = plan_type
         self.plan_use_full_state = plan_use_full_state
 
@@ -147,7 +153,8 @@ class SequenceManualPlanDataset(SequenceDataset):
         self.sample_prob *= traj_dists / traj_dists.sum()
         self.sample_prob /= self.sample_prob.sum()
         self.expected_cum_reward = np.array(
-            [traj['returns'][0] * p for traj, p in zip(self.dataset, self.sample_prob)]).sum()
+            [traj['returns'][0] * p for traj, p in zip(self.dataset, self.sample_prob)]
+        ).sum()
         self.max_traj_length = max(self.info["traj_lens"])
         self.use_log_distance = use_log_distance
         self.plan_max_trajectory_ratio = plan_max_trajectory_ratio
@@ -157,9 +164,13 @@ class SequenceManualPlanDataset(SequenceDataset):
         obs = traj['observations']
         return np.linalg.norm(obs[-1][:2] - obs[0][:2])
 
-    def create_plan(self, states):
+    def create_plan(self, states, returns=None):
         if self.plan_length:
-            positions = states[:, :self.plan_dim]
+            positions = states[:, :self.path_dim]
+            if returns is not None:
+                # handle the reward conditioning
+                positions = np.hstack((positions, returns[:, np.newaxis]))
+
             simplify_fn = simplify_path_to_target_points_by_distance_log_scale if self.use_log_distance else \
                 simplify_path_to_target_points_by_distance
             path = np.array(simplify_fn(positions, self.path_length))
@@ -173,17 +184,18 @@ class SequenceManualPlanDataset(SequenceDataset):
 
         return path
 
+
     def convert_plan_to_path(self, plan):
         if self.plan_type == "combined":
-            plan = plan[0]
-            return plan.reshape(*plan.shape[:-1], -1, self.path_dim)
+            plan = plan[0].reshape(*plan.shape[:-1], -1, self.path_dim)
         else:
-            return plan[:, :self.path_dim]
+            plan = plan[:, :self.path_dim]
+
+        return plan if self.is_gc else plan[..., :-1]
 
     def _prepare_sample(self, traj_idx, start_idx):
         traj = self.dataset[traj_idx]
         # https://github.com/kzl/decision-transformer/blob/e2d82e68f330c00f763507b3b01d774740bee53f/gym/experiment.py#L128 # noqa
-        goal = traj["goals"][0:1].astype(np.float32)
 
         # Hindsight goal relabelling only if the goal was actually achieved
         # Relabelling all trajectories can cause it to learn that bad actions still reach the goal
@@ -195,20 +207,36 @@ class SequenceManualPlanDataset(SequenceDataset):
         # create the plan from the current state minus some random amount to at most half the max episode length
         # we subtract this random amount to make sure eval doesn't go OOD when the start state doesn't match.
         plan_states_start = max(0, start_idx + random.randint(-self.seq_len, 0))
-        plan_states_end = plan_states_start + int(self.max_traj_length * self.plan_max_trajectory_ratio) + 1
+        plan_states_end = plan_states_start + (max(math.floor(random.random()*len(states_till_end)), self.path_length)
+                                               if self.is_gc
+                                               else int(self.max_traj_length * self.plan_max_trajectory_ratio)) + 1
         plan_states = traj["observations"][plan_states_start:plan_states_end]
+        plan_returns =  traj["returns"][plan_states_start:plan_states_end] * self.reward_scale
 
         actions = traj["actions"][start_idx: start_idx + self.seq_len]
-        returns = traj["returns"][start_idx: start_idx + self.seq_len]
+        returns = traj["returns"][start_idx: start_idx + self.seq_len] * self.reward_scale
         time_steps = np.arange(start_idx, start_idx + self.seq_len)
 
         states = normalize_state(states, self.state_mean, self.state_std)
         states_till_end = normalize_state(states_till_end, self.state_mean, self.state_std)
         plan_states = normalize_state(plan_states, self.state_mean, self.state_std)
-        goal = normalize_state(goal, self.state_mean[0:1, :2], self.state_std[0:1, :2])
-        returns = returns * self.reward_scale
+        if self.is_gc:
+            if "goals" in traj.keys():
+                # ant maze specific fix in future
+                goal = traj["goals"][0:1].astype(np.float32)
+                goal = normalize_state(goal, self.state_mean[0:1, :2], self.state_std[0:1, :2])
+            else:
+                # for other environments select random observation in future
+                # since the plan already implements this logic we just select the last plan state
+                goal = plan_states[-1:]
+        else:
+            goal = np.empty((1,0))
 
-        plan = self.create_plan(plan_states).astype(np.float32)
+        if self.is_gc:
+            plan = self.create_plan(plan_states).astype(np.float32)
+        else:
+            plan = self.create_plan(plan_states, plan_returns).astype(np.float32)
+
         # pad up to seq_len if needed, padding is masked during training
         mask = np.hstack(
             [np.ones(states.shape[0]), np.zeros(self.seq_len - states.shape[0])]
@@ -250,6 +278,7 @@ class PlanningDecisionTransformer(DecisionTransformer):
                  residual_dropout: float = 0.0,
                  plan_length: int = 1,
                  use_two_phase_training: bool = False,
+                 goal_idxs: Tuple[int, ...] = (0,1),
                  **kwargs
                  ):
         super().__init__(state_dim, action_dim,
@@ -279,6 +308,7 @@ class PlanningDecisionTransformer(DecisionTransformer):
         self.plan_positional_emb = nn.Embedding(plan_length, embedding_dim)
         self.plan_dim = plan_dim
         self.use_two_phase_training = use_two_phase_training
+        self.goal_idxs = torch.tensor(goal_idxs, dtype=torch.long)
         # Create position IDs for plan once
         self.register_buffer('plan_position_ids', torch.arange(0, self.plan_length).unsqueeze(0))
 
@@ -303,7 +333,8 @@ class PlanningDecisionTransformer(DecisionTransformer):
             # handle goal
             # we do this inserting the goal into the state, embedding it then subtracting the state embedding
             # we detatch the state embedding to prevent co-dependency during backprop
-            goal_modified_state_0 = torch.cat((goal, states[:, 0:1, 2:].clone().detach()), dim=-1)
+            goal_modified_state_0 = states[:, 0:1].clone().detach()
+            goal_modified_state_0[:, :, self.goal_idxs] = goal[:, :, self.goal_idxs]
             goal_token = (self.state_emb(goal_modified_state_0) - state_emb_no_time_emb[:, 0:1, :]).detach()
 
             # [batch_size, seq_len * 3, emb_dim], (r_0, s_0, a_0, r_1, s_1, a_1, ...)
@@ -354,6 +385,18 @@ class PlanningDecisionTransformer(DecisionTransformer):
 
         return plan, out_actions, attention_maps
 
+def get_env_goal(env):
+    env_id = env.spec.id
+    if "ant" in env_id:
+        return env.target_goal
+    if "kitchen" in env_id:
+        goal = np.empty((30,))
+        for task in env.TASK_ELEMENTS:
+            subtask_indices = kitchen_envs.OBS_ELEMENT_INDICES[task]
+            subtask_goals = kitchen_envs.OBS_ELEMENT_GOALS[task]
+            goal[subtask_indices] = subtask_goals
+    else:
+        raise ValueError("Expected ant of kitchen env, found ", env_id)
 
 # Training and evaluation logic
 @torch.no_grad()
@@ -372,6 +415,7 @@ def eval_rollout(
         action_noise_scale: float = 0.7,
         state_noise_scale: float = 0.1,
         num_eps_with_logged_attention: int = 3,
+        is_goal_conditioned: bool = False,
 ) -> Tuple[float, float, list, list, list, list, np.ndarray, tuple]:
     states = torch.zeros(1, pdt_model.episode_len + 1, pdt_model.state_dim, dtype=torch.float, device=device)
     actions = torch.zeros(1, pdt_model.episode_len, pdt_model.action_dim, dtype=torch.float, device=device)
@@ -390,8 +434,7 @@ def eval_rollout(
     pt_frames = []
     plan = None
     plan_paths = []
-    goal_unmodified = env.target_goal
-    print(goal_unmodified)
+    goal_unmodified = get_env_goal(env)
     goal = torch.tensor(goal_unmodified, dtype=torch.float32, device=device).unsqueeze(0).unsqueeze(0)
 
     for step in range(min(pdt_model.episode_len, early_stop_step)):
@@ -505,7 +548,8 @@ def train(config: TrainConfig):
         embedding_dim=config.embedding_dim,
         use_log_distance=config.use_log_distance_plans,
         plan_type=config.plan_type,
-        plan_use_full_state=config.plan_use_full_state
+        plan_use_full_state=config.plan_use_full_state,
+        is_goal_conditioned=config.is_goal_conditioned
     )
 
     trainloader = DataLoader(
@@ -520,7 +564,7 @@ def train(config: TrainConfig):
         state_mean=dataset.state_mean,
         state_std=dataset.state_std,
         reward_scale=config.reward_scale,
-        normalize_target=True
+        normalize_target=config.is_goal_conditioned
     )
 
     # DT model & optimizer & scheduler setup
@@ -540,7 +584,8 @@ def train(config: TrainConfig):
         embedding_dropout=config.embedding_dropout,
         max_action=config.max_action,
         plan_length=dataset.plan_length,
-        use_two_phase_training=config.use_two_phase_training
+        use_two_phase_training=config.use_two_phase_training,
+        goal_idxs=config.goal_indices
     ).to(config.device)
 
     optim = torch.optim.AdamW(
