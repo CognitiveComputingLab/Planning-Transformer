@@ -192,7 +192,8 @@ def load_d4rl_trajectories(
         data_["observations"].append(dataset["observations"][i])
         data_["actions"].append(dataset["actions"][i])
         data_["rewards"].append(dataset["rewards"][i])
-        data_["goals"].append(dataset["infos/goal"][i])
+        if "infos/goal" in dataset.keys():
+            data_["goals"].append(dataset["infos/goal"][i])
 
         if dataset["terminals"][i] or dataset["timeouts"][i]:
             episode_data = {k: np.array(v, dtype=np.float32) for k, v in data_.items()}
