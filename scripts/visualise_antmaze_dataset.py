@@ -13,7 +13,7 @@ import os
 
 def main(output_directory):
     env_name = "antmaze-medium-diverse-v2"
-    ds = PDT_oracle_plan.SequenceManualPlanDataset(env_name)
+    ds = PDT.SequenceManualPlanDataset(env_name)
 
     # rewards_weighted = 0
     # for traj, p in zip(ds.dataset, ds.sample_prob):
@@ -47,11 +47,11 @@ def main(output_directory):
         lengths.append(len(traj['returns']))
 
         # or np.linalg.norm(ant_path[-1, :2] - goal) < 0.5
-        if not reached_goal:
+        if reached_goal:
             for i, plot_fn in enumerate([plot_and_log_paths, plot_and_log_paths_3d]):
-                if i==0: continue
+                if i==1: continue
                 plot_fn(
-                    image_path="../bg_images/antmaze_medium_bg.png",
+                    image_path="bg_images/antmaze_medium_bg.png",
                     start=start,
                     goal=goal,
                     plan_paths=[],  # Assuming no planned paths here, adjust as needed

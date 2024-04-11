@@ -149,13 +149,16 @@ def plot_and_log_paths(image_path, start, goal, plan_paths, ant_path, output_fol
                        log_to_wandb=True, save_data=True, orientation_path=None):
     # if the output folder doesn't exist make it
     os.makedirs(output_folder, exist_ok=True)
-    # Load the background image
-    bg_image = plt.imread(image_path)
+
 
     # Create figure and axes
     fig, ax = plt.subplots()
     tl, br = normalise_maze_coords([[-6, -6], [26, 26]], pos_mean, pos_std)
-    ax.imshow(bg_image, extent=(tl[0], br[0], tl[1], br[1]))
+
+    # Load the background image
+    if image_path is not None:
+        bg_image = plt.imread(image_path)
+        ax.imshow(bg_image, extent=(tl[0], br[0], tl[1], br[1]))
 
     goal = np.array(goal)
 
