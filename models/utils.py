@@ -167,11 +167,15 @@ def plot_and_log_paths(image_path, start, goal, plan_paths, ant_path, output_fol
     ax.scatter(goal[0], goal[1], s=100, c='silver', marker='*', zorder=5)  # Goal in silver
 
     # Plot plan paths with different coloured lines and dots
-    for plan_path in plan_paths:
+    for i, plan_path in enumerate(plan_paths):
+        # if len(plan_paths)>10 and (i%4!=0 and i!=len(plan_paths)-1 and i!=0):
+        #     continue
+        if not (i == 0 or i == len(plan_paths)-1):
+            continue
         if plan_path.shape[0]:
             # print(plan_path.shape, plan_path)
             ax.plot(plan_path[:, 0], plan_path[:, 1], '-o', linewidth=2, markersize=4, alpha=0.5)
-            # ax.plot(plan_path[0, 0], plan_path[0, 1], 'o', color='red', markersize=4, alpha=1.0)
+            ax.plot(plan_path[0, 0], plan_path[0, 1], 'o', color='red', markersize=4, alpha=1.0)
 
     if ant_path is not None:
         # Plot ant path with rainbow line
@@ -188,7 +192,7 @@ def plot_and_log_paths(image_path, start, goal, plan_paths, ant_path, output_fol
         orientation = orientation_path[-1]
         forward_rot, up_rot, right_rot = rotate_orientation_vectors(orientation)
         has_fallen = up_rot[2]<0.25
-        print(up_rot, has_fallen)
+        # print(up_rot, has_fallen)
         if has_fallen:
             ax.scatter(ant_path[-1][0], ant_path[-1][1], s=100, c='yellow', marker='x', zorder=5)  # mark that it fell
 
@@ -364,5 +368,4 @@ def simplify_path_to_target_points_by_distance_log_scale(path, num_points):
     scaled_log_dists = log_scale / max_log * cum_dists[-1]
 
     target_indices = np.searchsorted(cum_dists, scaled_log_dists, side='right') - 1
-
     return path[target_indices]

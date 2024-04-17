@@ -289,7 +289,6 @@ class TransformerBlock(nn.Module):
             self, x: torch.Tensor, padding_mask: Optional[torch.Tensor] = None, log_attention: Optional[bool] = False
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         causal_mask = self.causal_mask[: x.shape[1], : x.shape[1]]
-
         norm_x = self.norm1(x)
 
         attention = self.attention(

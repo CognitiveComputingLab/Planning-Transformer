@@ -3,8 +3,6 @@ Modified version of the single file implementation of Decision transformer as pr
 """
 import warnings
 
-import numpy as np
-
 warnings.filterwarnings('ignore')
 warnings.filterwarnings('ignore', category=DeprecationWarning, module='numpy.*')
 
@@ -23,7 +21,6 @@ from d4rl.kitchen import kitchen_envs
 from models.DT import *
 from models.utils import *
 from math import inf
-from typing import Callable
 
 
 @dataclass
@@ -99,6 +96,10 @@ class TrainConfig:
     replanning_interval: int = 40
     plan_type: Optional[str] = "combined"
     plan_use_full_state: Optional[bool] = False
+    plan_indices: Optional[Tuple[int, ...]] = None
+    path_viz_indices: Optional[Tuple[int, int]] = (0, 1)
+    plans_use_actions: Optional[bool] = False
+    non_plan_downweighting: Optional[float] = 0.0
 
     # video
     record_video: bool = False
@@ -119,9 +120,7 @@ class TrainConfig:
     state_noise_scale: Optional[float] = 0.0
     use_two_phase_training: Optional[bool] = False
     is_goal_conditioned: Optional[bool] = False
-    goal_indices: Optional[Tuple[int, ...]] = (0,1)
-    plan_indices: Optional[Tuple[int, ...]] = None
-    path_viz_indices: Optional[Tuple[int, int]] = (0,1)
+    goal_indices: Optional[Tuple[int, ...]] = (0, 1)
 
     def __post_init__(self):
         self.name = f"{self.name}-{self.env_name}-{str(uuid.uuid4())[:8]}"
@@ -143,22 +142,27 @@ class TrainConfig:
             self.plan_path_viz_indices = self.path_viz_indices
         self.ant_path_viz_indices = self.path_viz_indices
 
+        if not self.is_goal_conditioned:
+            self.goal_indices = (0,)
+
 
 class SequenceManualPlanDataset(SequenceDataset):
     def __init__(self, env_name: str, seq_len: int = 10, reward_scale: float = 1.0, path_length=10,
                  embedding_dim: int = 128, use_log_distance: bool = True, plan_max_trajectory_ratio=0.5,
-                 plan_type: str = "combined", plan_indices:Tuple[int, ...]=(0,1), is_goal_conditioned: bool = False):
+                 plan_type: str = "combined", plan_indices: Tuple[int, ...] = (0, 1),
+                 is_goal_conditioned: bool = False, plans_use_actions: bool = False):
         super().__init__(env_name, seq_len, reward_scale)
         self.path_length = path_length
         self.plan_indices = range(0, self.state_mean.shape[1]) if plan_indices is None else plan_indices
+        self.plans_use_actions = plans_use_actions
 
-        self.is_gc = is_goal_conditioned # dataset depends on whether reward conditioned (rc) or goal conditioned (gc)
+        self.is_gc = is_goal_conditioned  # dataset depends on whether reward conditioned (rc) or goal conditioned (gc)
         self.plan_length = self.path_length if plan_type == "split" else 1 if plan_type == "combined" else 0
-        self.path_dim = len(self.plan_indices)
+        actions_shape = self.dataset[0]["actions"].shape[-1]
+        self.path_dim = len(self.plan_indices) + (actions_shape if plans_use_actions else 0)
         self.plan_dim = (1 if plan_type == "split" else self.path_length if plan_type == "combined" else 0) \
                         * (self.path_dim + (not self.is_gc))
         self.plan_type = plan_type
-
 
         self.embedding_dim = embedding_dim
         traj_dists = np.array([self.traj_distance(traj, plan_indices) for traj in self.dataset])
@@ -177,12 +181,15 @@ class SequenceManualPlanDataset(SequenceDataset):
         obs = traj['observations'][:, indices]
         return np.linalg.norm(obs[-1] - obs[0])
 
-    def create_plan(self, states, returns=None):
+    def create_plan(self, states, returns=None, actions=None):
         if self.plan_length:
             positions = states[:, self.plan_indices]
             if returns is not None:
                 # handle the reward conditioning
                 positions = np.hstack((positions, returns[:, np.newaxis]))
+
+            if actions is not None:
+                positions = np.hstack((positions, actions))
 
             simplify_fn = simplify_path_to_target_points_by_distance_log_scale if self.use_log_distance else \
                 simplify_path_to_target_points_by_distance
@@ -197,10 +204,9 @@ class SequenceManualPlanDataset(SequenceDataset):
 
         return path
 
-
     def convert_plan_to_path(self, plan, plan_path_viz_indices):
         if self.plan_type == "combined":
-            plan = plan[0].reshape(*plan.shape[:-1], -1, self.path_dim)
+            plan = plan[0].reshape(*plan[0].shape[:-1], -1, self.path_dim)
 
         return plan[:, plan_path_viz_indices]
 
@@ -217,12 +223,13 @@ class SequenceManualPlanDataset(SequenceDataset):
 
         # create the plan from the current state minus some random amount to at most half the max episode length
         # we subtract this random amount to make sure eval doesn't go OOD when the start state doesn't match.
+        # plan_states_start = max(0, start_idx + random.randint(-self.seq_len, 0))
         plan_states_start = max(0, start_idx + random.randint(-self.seq_len, 0))
-        plan_states_end = start_idx + (max(math.floor(random.random()*len(states_till_end)), self.path_length)
-                                               if self.is_gc
-                                               else int(self.max_traj_length * self.plan_max_trajectory_ratio)) + 1
+        plan_states_end = start_idx + (max(math.floor(random.random() * len(states_till_end)), self.path_length)
+                                       if self.is_gc
+                                       else int(self.max_traj_length * self.plan_max_trajectory_ratio)) + 1
         plan_states = traj["observations"][plan_states_start:plan_states_end]
-        plan_returns =  traj["returns"][plan_states_start:plan_states_end] * self.reward_scale
+        plan_returns = traj["returns"][plan_states_start:plan_states_end] * self.reward_scale
 
         actions = traj["actions"][start_idx: start_idx + self.seq_len]
         returns = traj["returns"][start_idx: start_idx + self.seq_len] * self.reward_scale
@@ -244,10 +251,11 @@ class SequenceManualPlanDataset(SequenceDataset):
             #     # since the plan already implements this logic we just select the last plan state
             #     goal = plan_states[-1:]
         else:
-            goal = np.empty((1,0))
+            goal = np.zeros((1, 1))
 
         if self.is_gc:
-            plan = self.create_plan(plan_states).astype(np.float32)
+            plan_actions = traj["actions"][plan_states_start:plan_states_end] if self.plans_use_actions else None
+            plan = self.create_plan(plan_states, actions=plan_actions).astype(np.float32)
         else:
             plan = self.create_plan(plan_states, plan_returns).astype(np.float32)
 
@@ -292,7 +300,9 @@ class PlanningDecisionTransformer(DecisionTransformer):
                  residual_dropout: float = 0.0,
                  plan_length: int = 1,
                  use_two_phase_training: bool = False,
-                 goal_indices: Tuple[int, ...] = (0,1),
+                 goal_indices: Tuple[int, ...] = (0, 1),
+                 plan_indices: Tuple[int, ...] = (0, 1),
+                 non_plan_downweighting: float = 0.0,
                  **kwargs
                  ):
         super().__init__(state_dim, action_dim,
@@ -307,7 +317,7 @@ class PlanningDecisionTransformer(DecisionTransformer):
         self.blocks = nn.ModuleList(
             [
                 TransformerBlock(
-                    seq_len=3 * seq_len + plan_length + 1,  # Adjusted for the planning token and goal
+                    seq_len=3 * seq_len + plan_length + 1 + 1,  # Adjusted for the planning token and goal
                     embedding_dim=embedding_dim,
                     num_heads=num_heads,
                     attention_dropout=attention_dropout,
@@ -321,13 +331,31 @@ class PlanningDecisionTransformer(DecisionTransformer):
         self.plan_emb = nn.Linear(plan_dim, embedding_dim)
         self.goal_emb = nn.Linear(len(goal_indices), embedding_dim)
         self.plan_positional_emb = nn.Embedding(plan_length, embedding_dim)
+        self.full_seq_pos_emb = nn.Embedding(3 + plan_length + 1, embedding_dim)
         self.plan_dim = plan_dim
         self.use_two_phase_training = use_two_phase_training
         self.goal_indices = torch.tensor(goal_indices, dtype=torch.long)
+        self.plan_indices = torch.tensor(plan_indices, dtype=torch.long)
         # Create position IDs for plan once
         self.register_buffer('plan_position_ids', torch.arange(0, self.plan_length).unsqueeze(0))
+        self.register_buffer('full_seq_pos_ids', torch.arange(0, 3 * seq_len + plan_length + 1 + 1).unsqueeze(0))
+
+        # increase focus on plan by downweighting non plan tokens
+        # if non_plan_downweighting <0:
+        #     self.downweight_non_plan(3, plan_length, non_plan_downweighting)
 
         self.apply(self._init_weights)
+
+    def downweight_non_plan(self, plan_start, plan_length, downweighting):
+        for block in self.blocks:
+            # attention takes a causal mask which is 0.0 if we fully attend and -inf to avoid attending
+            # however by providing a value between -inf and 0.0 for the columns which are not the plans, we effectively
+            # downweight the tokens attention towards non plan tokens, helping focus more on the plans
+            new_attn_mask = torch.full(block.causal_mask.shape, downweighting, dtype=torch.float32)
+            new_attn_mask[0:plan_start + plan_length, :] = 0.0
+            new_attn_mask[:, plan_start:plan_start + plan_length] = -downweighting
+            new_attn_mask.masked_fill_(block.causal_mask, float('-inf')).fill_diagonal_(0.0)
+            block.causal_mask = new_attn_mask
 
     def forward(self, goal, states, actions, returns_to_go, time_steps, plan, padding_mask=None,
                 log_attention=False):
@@ -337,13 +365,25 @@ class PlanningDecisionTransformer(DecisionTransformer):
         # [batch_size, seq_len, emb_dim]
         time_emb = self.timestep_emb(time_steps)
         state_emb_no_time_emb = self.state_emb(states)
-        state_emb = state_emb_no_time_emb + time_emb
-        act_emb = self.action_emb(actions) + time_emb
-        returns_emb = self.return_emb(returns_to_go.unsqueeze(-1)) + time_emb
+        # state_emb_no_time_emb = self.plan_emb(states[:, :, :2])
+        state_emb = state_emb_no_time_emb
+        act_emb = self.action_emb(actions)
+        # remove action conditioning (would this help?)
+        # act_emb = torch.zeros (size=act_emb.shape, dtype=torch.float32, device=act_emb.device)
+        returns_emb = self.return_emb(returns_to_go.unsqueeze(-1))
         for training_phase in range(self.use_two_phase_training + 1):
             plan_pos_emb = self.plan_positional_emb(self.plan_position_ids[:, :plan.shape[1]])
-            plan_emb = self.plan_emb(plan) + plan_pos_emb if self.plan_length else \
-                torch.empty(batch_size, 0, self.embedding_dim, device=device)
+            # make plan relative, accounting for the possibility of actions in plan
+            # can also add pos_emb here if don't want the full sequence embedding
+            if self.plan_length:
+                plan_emb = self.plan_emb(torch.cat((
+                        plan[:, :, :len(self.plan_indices)] - states[:, :1 ,self.plan_indices],
+                        plan[:, :, len(self.plan_indices):]
+                ),dim=-1))
+            else:
+                plan_emb = torch.empty(batch_size, 0, self.embedding_dim, device=device)
+            # plan_emb = self.plan_emb(plan) if self.plan_length else \
+            #         torch.empty(batch_size, 0, self.embedding_dim, device=device)
 
             # handle goal
             # we do this inserting the goal into the state, embedding it then subtracting the state embedding
@@ -351,7 +391,13 @@ class PlanningDecisionTransformer(DecisionTransformer):
             # goal_modified_state_0 = states[:, 0:1].clone().detach()
             # goal_modified_state_0[:, :, self.goal_indices] = goal[:, :, self.goal_indices]
             # goal_token = (self.state_emb(goal_modified_state_0) - state_emb_no_time_emb[:, 0:1, :]).detach()
-            goal_token = self.goal_emb(goal[:, :, self.goal_indices])
+            # goal_token = torch.zeros(state_emb.shape, dtype=torch.float32, device=goal.device)[:,:1]
+            # goal_token[:,:1,:2]=goal[:, :1, self.goal_indices] - states[:, :1, self.goal_indices]
+            goal_token = self.goal_emb(torch.cat((states[:, :1, self.goal_indices], goal[:, :1, self.goal_indices]), dim=1))
+            # if(batch_size == 1):
+            #     print(goal_token)
+            # goal_token = self.goal_emb(goal[:, :1, self.goal_indices])
+            # goal_token = self.plan_emb(goal[:, :1, self.goal_indices])
 
             # [batch_size, seq_len * 3, emb_dim], (r_0, s_0, a_0, r_1, s_1, a_1, ...)
             sequence = (
@@ -361,6 +407,7 @@ class PlanningDecisionTransformer(DecisionTransformer):
             )
             # convert to form (goal, r_0, s_0, p_0, p1, ..., p_n, a_0, r_1, s_1, a_1, ...)
             sequence = construct_sequence_with_goal_and_plan(goal_token, plan_emb, sequence)
+            sequence[:, :3 + plan.shape[1]] += self.full_seq_pos_emb(self.full_seq_pos_ids[:, :3 + plan.shape[1]])
             padding_mask_full = None
             if padding_mask is not None:
                 # [batch_size, seq_len * 3], stack mask identically to fit the sequence
@@ -371,9 +418,9 @@ class PlanningDecisionTransformer(DecisionTransformer):
                 )
                 # account for the planning token in the mask
                 # True values in the mask mean don't attend to, so we use zeroes so the plan and goal are always attended to
-                plan_mask = torch.zeros(batch_size, self.plan_length, dtype=torch.bool,
+                plan_mask = torch.zeros(plan_emb.shape[:2], dtype=torch.bool,
                                         device=device)
-                goal_mask = torch.zeros(batch_size, 1, dtype=torch.bool,
+                goal_mask = torch.zeros(goal_token.shape[:2], dtype=torch.bool,
                                         device=device)
 
                 padding_mask_full = construct_sequence_with_goal_and_plan(goal_mask, plan_mask, padding_mask_full)
@@ -393,20 +440,22 @@ class PlanningDecisionTransformer(DecisionTransformer):
 
             if training_phase == 0:
                 # for input to the planning_head we use the sequence shifted one to the left of the plan_sequence
-                plan = self.planning_head(out[:, 2: 2 + self.plan_length])
+                plan = self.planning_head(out[:, 3: 3 + self.plan_length])
             if training_phase == self.use_two_phase_training:
                 # predict actions only from the state embeddings
-                out_states = torch.cat([out[:, 2:3], out[:, (5 + self.plan_length)::3]], dim=1)
+                out_states = torch.cat([out[:, 3:4], out[:, (6 + self.plan_length)::3]], dim=1)
                 out_actions = self.action_head(out_states) * self.max_action  # [batch_size, seq_len, action_dim]
 
         return plan, out_actions, attention_maps
 
+
 def get_env_goal(env):
     env_id = env.spec.id
     if "antmaze" in env_id:
-        print(env.target_goal)
-        return  [-1.1,-1.1]
-        # return env.target_goal
+        # print(env.target_goal)
+        # return [-1.1, -1.1]
+        # return [-1.8, -2.3]`
+        return env.target_goal
     if "kitchen" in env_id:
         goal = np.empty((30,))
         for task in env.TASK_ELEMENTS:
@@ -415,6 +464,7 @@ def get_env_goal(env):
             goal[subtask_indices] = subtask_goals
     else:
         raise ValueError("Expected antmaze or kitchen env, found ", env_id)
+
 
 # Training and evaluation logic
 @torch.no_grad()
@@ -470,6 +520,24 @@ def eval_rollout(
                     log_attention=False
                 )
                 plan[:, plan_token_i] = pred_plan[0, plan_token_i]
+                # if plan_token_i == 1:
+                #     plan[:, plan_token_i] = 0.2*goal+0.8*states[:, step:step + 1][:, :, :2]
+
+            # if step==0:
+            #     true_plan_2 = torch.stack(
+            #         [(x*goal[0,0]+(1-x)*states[0, step, :2]) for x in torch.linspace(0.0,1.0,10)],
+            #         dim=0
+            #     ).unsqueeze(0)
+            #     pred_plan_2, _, _ = pdt_model(
+            #         goal,
+            #         states[:, step:step + 1],
+            #         torch.zeros(1, 1, pdt_model.action_dim, dtype=torch.float, device=device),
+            #         torch.tensor([[0.5]], dtype=torch.float, device=device),
+            #         time_steps[:, 900:901],
+            #         plan=true_plan_2,
+            #         log_attention=False
+            #     )
+            #     print(true_plan_2, pred_plan_2)
 
             if plan_length:
                 plan_path = plan[0].detach().cpu()
@@ -484,9 +552,13 @@ def eval_rollout(
             render_frames.append(env.render(mode="rgb_array"))
 
         # actions_noisy = actions + torch.randn(actions.shape, device=device) * action_noise_scale * 0.5
+        # states_noisy = torch.zeros(size=states.shape,dtype=torch.float32, device=states.device )
+        # states_noisy = states_noisy[:, : step + 1][:, -pdt_model.seq_len:]
+        # states_noisy[0] = states[:, : step + 1][:, -pdt_model.seq_len:][0]
         _, predicted_actions, attention_maps = pdt_model(
             goal,
             states[:, : step + 1][:, -pdt_model.seq_len:],
+            # states_noisy,
             # actions_noisy[:, : step + 1][:, -pdt_model.seq_len:],
             actions[:, : step + 1][:, -pdt_model.seq_len:],
             returns[:, : step + 1][:, -pdt_model.seq_len:],
@@ -564,7 +636,8 @@ def train(config: TrainConfig):
         embedding_dim=config.embedding_dim,
         use_log_distance=config.use_log_distance_plans,
         plan_type=config.plan_type,
-        is_goal_conditioned=config.is_goal_conditioned
+        is_goal_conditioned=config.is_goal_conditioned,
+        plans_use_actions=config.plans_use_actions
     )
 
     trainloader = DataLoader(
@@ -600,7 +673,9 @@ def train(config: TrainConfig):
         max_action=config.max_action,
         plan_length=dataset.plan_length,
         use_two_phase_training=config.use_two_phase_training,
-        goal_indices=config.goal_indices
+        goal_indices=config.goal_indices,
+        plan_indices=config.plan_indices,
+        non_plan_downweighting=config.non_plan_downweighting
     ).to(config.device)
 
     optim = torch.optim.AdamW(
@@ -638,14 +713,24 @@ def train(config: TrainConfig):
     for step in trange(step_start, config.update_steps + step_start, desc="Training"):
         # print(f"step {step} in train loop")
         batch = next(trainloader_iter)
-        if step == step_start:
-            first_batch = batch
-        if step % config.eval_offline_every == 0:
-            batch = first_batch
+        # if step == step_start:
+        #     first_batch = batch
+        # if step % config.eval_offline_every == 0:
+        #     batch = first_batch
         goal, states, actions, returns, time_steps, mask, plan, states_till_end, steps_left, return_weight = \
             [b.to(config.device) for b in batch]
         # True value indicates that the corresponding key value will be ignored
         padding_mask = ~mask.to(torch.bool)
+
+        # increase focus on plan by corrupting states/actions during first 10k steps
+        # if step / config.update_steps < 0.1:
+        #     states[:, 1:] = torch.zeros(size=states.shape, dtype=torch.float32, device=states.device)[:, 1:]
+        # actions_input = torch.zeros(size=actions.shape, dtype=torch.float32,
+        #                             device=states.device) if step / config.update_steps < 0.1 else actions
+
+        # every other gradient update step, corrupt states with empty 0s, to help focus on plans
+        # if step % 2== 0:
+        #     states[:, 1:] = torch.zeros(size=states.shape, dtype=torch.float32, device=states.device)[:, 1:]
 
         # Forward pass through the model with planning tokens
         predicted_plan, predicted_actions, attention_maps = pdt_model(
@@ -666,8 +751,13 @@ def train(config: TrainConfig):
         plan_loss = (plan_loss * return_weight).mean()
         action_loss = F.mse_loss(predicted_actions, actions.detach(), reduction="none")
         action_loss = (action_loss * mask.unsqueeze(-1) * return_weight).mean()
-        # action_loss = (action_loss * mask.unsqueeze(-1)).mean()
         combined_loss = 0.5 * action_loss + 0.5 * plan_loss if dataset.plan_length else action_loss
+        # t = step / config.update_steps
+        # combined_loss = t * action_loss + (1 - t) * plan_loss if dataset.plan_length else action_loss
+        # if step/config.update_steps <0.1:
+        #     combined_loss = plan_loss if dataset.plan_length else action_loss
+        # else:
+        #     combined_loss = 0.5 * action_loss + 0.5 * plan_loss if dataset.plan_length else action_loss
         # Backpropagation and optimization for main model
 
         optim.zero_grad()
@@ -687,7 +777,7 @@ def train(config: TrainConfig):
         # print("train_loss", main_loss.item())
 
         if step % config.eval_offline_every == 0:
-            for batch_index in range(10):
+            for batch_index in random.sample(range(config.batch_size), 10):
                 paths = []
                 if dataset.plan_length:
                     # select batch_index of the batch and first of the plan sequence
@@ -729,8 +819,8 @@ def train(config: TrainConfig):
                 num_episodes = config.eval_episodes
             pdt_model.eval()
             for target_return in config.target_returns:
-                if config.eval_seed != -1:
-                    set_seed(config.eval_seed, eval_env, deterministic_torch=False)
+                # if config.eval_seed != -1:
+                #     set_seed(config.eval_seed, eval_env, deterministic_torch=False)
                 eval_returns = []
                 eval_goal_dists = []
                 for ep_id in trange(num_episodes, desc="Evaluation", leave=False):
@@ -776,7 +866,7 @@ def train(config: TrainConfig):
                         output_folder=video_folder,
                         index=f"t={step}-ep={ep_id}",
                         log_to_wandb=False,
-                        pos_mean=dataset.state_mean[0,config.ant_path_viz_indices],
+                        pos_mean=dataset.state_mean[0, config.ant_path_viz_indices],
                         pos_std=dataset.state_std[0, config.ant_path_viz_indices],
                         orientation_path=ant_path[:, 3:7] if "antmaze" in config.env_name else None
                     )
