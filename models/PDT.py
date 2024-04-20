@@ -223,11 +223,11 @@ class SequenceManualPlanDataset(SequenceDataset):
 
         # create the plan from the current state minus some random amount to at most half the max episode length
         # we subtract this random amount to make sure eval doesn't go OOD when the start state doesn't match.
-        # plan_states_start = max(0, start_idx + random.randint(-self.seq_len, 0))
         plan_states_start = max(0, start_idx + random.randint(-self.seq_len, 0))
         plan_states_end = start_idx + (max(math.floor(random.random() * len(states_till_end)), self.path_length)
                                        if self.is_gc
                                        else int(self.max_traj_length * self.plan_max_trajectory_ratio)) + 1
+        # plan_states_end = len(traj["observations"])
         plan_states = traj["observations"][plan_states_start:plan_states_end]
         plan_returns = traj["returns"][plan_states_start:plan_states_end] * self.reward_scale
 
@@ -254,9 +254,12 @@ class SequenceManualPlanDataset(SequenceDataset):
             goal = np.zeros((1, 1))
 
         if self.is_gc:
-            plan_actions = traj["actions"][plan_states_start:plan_states_end] if self.plans_use_actions else None
+            plan_states = plan_states[:int(self.max_traj_length * self.plan_max_trajectory_ratio)]
+            plan_actions = traj["actions"][plan_states_start:plan_states_start+len(plan_states)]\
+                if self.plans_use_actions else None
             plan = self.create_plan(plan_states, actions=plan_actions).astype(np.float32)
         else:
+            plan_returns = plan_returns[:int(self.max_traj_length * self.plan_max_trajectory_ratio)]
             plan = self.create_plan(plan_states, plan_returns).astype(np.float32)
 
         # pad up to seq_len if needed, padding is masked during training
@@ -317,7 +320,7 @@ class PlanningDecisionTransformer(DecisionTransformer):
         self.blocks = nn.ModuleList(
             [
                 TransformerBlock(
-                    seq_len=3 * seq_len + plan_length + 1 + 1,  # Adjusted for the planning token and goal
+                    seq_len=3 * seq_len + plan_length + 1,  # Adjusted for the planning token and goal
                     embedding_dim=embedding_dim,
                     num_heads=num_heads,
                     attention_dropout=attention_dropout,
@@ -327,38 +330,41 @@ class PlanningDecisionTransformer(DecisionTransformer):
             ]
         )
         self.plan_length = plan_length
+        self.non_plan_downweighting = non_plan_downweighting
         self.planning_head = nn.Linear(embedding_dim, plan_dim)
         self.plan_emb = nn.Linear(plan_dim, embedding_dim)
         self.goal_emb = nn.Linear(len(goal_indices), embedding_dim)
         self.plan_positional_emb = nn.Embedding(plan_length, embedding_dim)
-        self.full_seq_pos_emb = nn.Embedding(3 + plan_length + 1, embedding_dim)
+        self.full_seq_pos_emb = nn.Embedding(3 + plan_length, embedding_dim)
         self.plan_dim = plan_dim
         self.use_two_phase_training = use_two_phase_training
         self.goal_indices = torch.tensor(goal_indices, dtype=torch.long)
         self.plan_indices = torch.tensor(plan_indices, dtype=torch.long)
+
         # Create position IDs for plan once
         self.register_buffer('plan_position_ids', torch.arange(0, self.plan_length).unsqueeze(0))
-        self.register_buffer('full_seq_pos_ids', torch.arange(0, 3 * seq_len + plan_length + 1 + 1).unsqueeze(0))
+        self.register_buffer('full_seq_pos_ids', torch.arange(0, 3 * seq_len + plan_length + 1).unsqueeze(0))
 
         # increase focus on plan by downweighting non plan tokens
-        # if non_plan_downweighting <0:
-        #     self.downweight_non_plan(3, plan_length, non_plan_downweighting)
+        self.original_causal_masks = [block.causal_mask for block in self.blocks]
 
         self.apply(self._init_weights)
 
     def downweight_non_plan(self, plan_start, plan_length, downweighting):
-        for block in self.blocks:
+        for i, block in enumerate(self.blocks):
             # attention takes a causal mask which is 0.0 if we fully attend and -inf to avoid attending
             # however by providing a value between -inf and 0.0 for the columns which are not the plans, we effectively
             # downweight the tokens attention towards non plan tokens, helping focus more on the plans
             new_attn_mask = torch.full(block.causal_mask.shape, downweighting, dtype=torch.float32)
             new_attn_mask[0:plan_start + plan_length, :] = 0.0
-            new_attn_mask[:, plan_start:plan_start + plan_length] = -downweighting
-            new_attn_mask.masked_fill_(block.causal_mask, float('-inf')).fill_diagonal_(0.0)
-            block.causal_mask = new_attn_mask
+            new_attn_mask[:, plan_start:plan_start + plan_length] = 0.0
+            new_attn_mask.masked_fill_(self.original_causal_masks[i], float('-inf')).fill_diagonal_(0.0)
+            block.causal_mask = new_attn_mask.to(block.causal_mask.device)
 
     def forward(self, goal, states, actions, returns_to_go, time_steps, plan, padding_mask=None,
                 log_attention=False):
+        if self.non_plan_downweighting < 0:
+            self.downweight_non_plan(3, self.plan_length, self.non_plan_downweighting)
         batch_size, seq_len = states.shape[0], states.shape[1]
         device = states.device
 
@@ -375,15 +381,15 @@ class PlanningDecisionTransformer(DecisionTransformer):
             plan_pos_emb = self.plan_positional_emb(self.plan_position_ids[:, :plan.shape[1]])
             # make plan relative, accounting for the possibility of actions in plan
             # can also add pos_emb here if don't want the full sequence embedding
-            if self.plan_length:
-                plan_emb = self.plan_emb(torch.cat((
-                        plan[:, :, :len(self.plan_indices)] - states[:, :1 ,self.plan_indices],
-                        plan[:, :, len(self.plan_indices):]
-                ),dim=-1))
-            else:
-                plan_emb = torch.empty(batch_size, 0, self.embedding_dim, device=device)
-            # plan_emb = self.plan_emb(plan) if self.plan_length else \
-            #         torch.empty(batch_size, 0, self.embedding_dim, device=device)
+            # if self.plan_length:
+            #     plan_emb = self.plan_emb(torch.cat((
+            #             plan[:, :, :len(self.plan_indices)] - states[:, :1 ,self.plan_indices],
+            #             plan[:, :, len(self.plan_indices):]
+            #     ),dim=-1))
+            # else:
+            #     plan_emb = torch.empty(batch_size, 0, self.embedding_dim, device=device)
+            plan_emb = self.plan_emb(plan) + plan_pos_emb if self.plan_length else \
+                    torch.empty(batch_size, 0, self.embedding_dim, device=device)
 
             # handle goal
             # we do this inserting the goal into the state, embedding it then subtracting the state embedding
@@ -393,11 +399,11 @@ class PlanningDecisionTransformer(DecisionTransformer):
             # goal_token = (self.state_emb(goal_modified_state_0) - state_emb_no_time_emb[:, 0:1, :]).detach()
             # goal_token = torch.zeros(state_emb.shape, dtype=torch.float32, device=goal.device)[:,:1]
             # goal_token[:,:1,:2]=goal[:, :1, self.goal_indices] - states[:, :1, self.goal_indices]
-            goal_token = self.goal_emb(torch.cat((states[:, :1, self.goal_indices], goal[:, :1, self.goal_indices]), dim=1))
+            # goal_token = self.goal_emb(torch.cat((states[:, :1, self.goal_indices], goal[:, :1, self.goal_indices]), dim=1))
             # if(batch_size == 1):
             #     print(goal_token)
             # goal_token = self.goal_emb(goal[:, :1, self.goal_indices])
-            # goal_token = self.plan_emb(goal[:, :1, self.goal_indices])
+            goal_token = self.plan_emb(goal[:, :1, self.goal_indices] - states[:, :1, self.goal_indices])
 
             # [batch_size, seq_len * 3, emb_dim], (r_0, s_0, a_0, r_1, s_1, a_1, ...)
             sequence = (
@@ -407,7 +413,7 @@ class PlanningDecisionTransformer(DecisionTransformer):
             )
             # convert to form (goal, r_0, s_0, p_0, p1, ..., p_n, a_0, r_1, s_1, a_1, ...)
             sequence = construct_sequence_with_goal_and_plan(goal_token, plan_emb, sequence)
-            sequence[:, :3 + plan.shape[1]] += self.full_seq_pos_emb(self.full_seq_pos_ids[:, :3 + plan.shape[1]])
+            # sequence[:, :2 + plan.shape[1]] += self.full_seq_pos_emb(self.full_seq_pos_ids[:, :2 + plan.shape[1]])
             padding_mask_full = None
             if padding_mask is not None:
                 # [batch_size, seq_len * 3], stack mask identically to fit the sequence
@@ -440,12 +446,14 @@ class PlanningDecisionTransformer(DecisionTransformer):
 
             if training_phase == 0:
                 # for input to the planning_head we use the sequence shifted one to the left of the plan_sequence
-                plan = self.planning_head(out[:, 3: 3 + self.plan_length])
+                plan = self.planning_head(out[:, 2: 2 + self.plan_length])
             if training_phase == self.use_two_phase_training:
                 # predict actions only from the state embeddings
-                out_states = torch.cat([out[:, 3:4], out[:, (6 + self.plan_length)::3]], dim=1)
+                out_states = torch.cat([out[:, 2:3], out[:, (5 + self.plan_length)::3]], dim=1)
                 out_actions = self.action_head(out_states) * self.max_action  # [batch_size, seq_len, action_dim]
 
+        if self.non_plan_downweighting < 0:
+            self.downweight_non_plan(3, self.plan_length, 0.0)
         return plan, out_actions, attention_maps
 
 
@@ -454,8 +462,9 @@ def get_env_goal(env):
     if "antmaze" in env_id:
         # print(env.target_goal)
         # return [-1.1, -1.1]
-        # return [-1.8, -2.3]`
-        return env.target_goal
+        # return [-1.8, -2.3]
+        return [0,0]
+        # return env.target_goal
     if "kitchen" in env_id:
         goal = np.empty((30,))
         for task in env.TASK_ELEMENTS:

@@ -11,7 +11,7 @@ embedding_dim: 128
 embedding_dropout: 0 #0.1
 env_name: "antmaze-medium-diverse-v2"
 episode_len: 1000
-eval_episodes: 10 #15
+eval_episodes: 15 #15
 eval_every: 5000
 eval_seed: 43 #42 or -1 to seed every run the same
 group: "dt-antmaze-medium-PDT-oracle"
@@ -33,7 +33,7 @@ weight_decay: 0.0001
 log_attn_weights: 1
 log_attn_every: 250
 record_video: 1
-run_name: "run_188"
+run_name: "run_215"
 eval_offline_every: 5000
 bg_image: "./bg_images/antmaze_medium_bg.png"
 eval_path_plot_every: 2500
@@ -52,8 +52,14 @@ goal_indices: [0,1]
 plan_indices: [0,1]
 path_viz_indices: [0,1]
 plans_use_actions: false
-non_plan_downweighting: 0
+non_plan_downweighting: 0 #-2
 
+#checkpoint_to_load: PDT-oracle-antmaze-medium-diverse-v2-199653d3 # no timestep emb + goal emb + sub
+#checkpoint_step_to_load: 99999
+#checkpoint_to_load: PDT-oracle-antmaze-medium-diverse-v2-3cc51615
+#checkpoint_step_to_load: 60000
+#checkpoint_to_load: "PDT-oracle-antmaze-medium-diverse-v2-8862433e" # goal_emb + don't subtract state
+#checkpoint_step_to_load: 80000
 #checkpoint_to_load: "PDT-oracle-antmaze-medium-diverse-v2-8862433e" # goal_emb + don't subtract state
 #checkpoint_step_to_load: 80000
 #checkpoint_to_load: "PDT-oracle-antmaze-medium-diverse-v2-c434a818" # multitoken

@@ -298,7 +298,8 @@ class TransformerBlock(nn.Module):
             attn_mask=causal_mask,
             key_padding_mask=padding_mask,
             need_weights=log_attention,
-            average_attn_weights=False
+            average_attn_weights=False,
+            is_causal=False,
         )
         attention_out = attention[0]
 
