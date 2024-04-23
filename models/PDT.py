@@ -1,7 +1,10 @@
 """
 Modified version of the single file implementation of Decision transformer as provided by the CORL team
 """
+import random
 import warnings
+
+import numpy as np
 
 warnings.filterwarnings('ignore')
 warnings.filterwarnings('ignore', category=DeprecationWarning, module='numpy.*')
@@ -17,10 +20,10 @@ if os.getcwd() not in sys.path:
 # concatenated
 
 import d4rl  # noqa
-from d4rl.kitchen import kitchen_envs
 from models.DT import *
 from models.utils import *
 from math import inf
+
 
 
 @dataclass
@@ -113,7 +116,7 @@ class TrainConfig:
     eval_offline_every: int = 50
     eval_path_plot_every: int = 1000
     use_return_weighting: Optional[bool] = False
-    eval_early_stop_step: Optional[int] = inf
+    eval_early_stop_step: Optional[int] = episode_len
     action_noise_scale: Optional[float] = 0.4
     use_log_distance_plans: Optional[bool] = False
     plan_max_trajectory_ratio: Optional[int] = 0.5
@@ -122,6 +125,7 @@ class TrainConfig:
     is_goal_conditioned: Optional[bool] = False
     goal_indices: Optional[Tuple[int, ...]] = (0, 1)
     use_goal_space_first_state_token: Optional[bool] = False
+    use_timestep_embedding: Optional[bool] = True
 
     def __post_init__(self):
         self.name = f"{self.name}-{self.env_name}-{str(uuid.uuid4())[:8]}"
@@ -145,7 +149,6 @@ class TrainConfig:
 
         if not self.is_goal_conditioned:
             self.goal_indices = (0,)
-
 
 class SequenceManualPlanDataset(SequenceDataset):
     def __init__(self, env_name: str, seq_len: int = 10, reward_scale: float = 1.0, path_length=10,
@@ -225,7 +228,7 @@ class SequenceManualPlanDataset(SequenceDataset):
         # create the plan from the current state minus some random amount to at most half the max episode length
         # we subtract this random amount to make sure eval doesn't go OOD when the start state doesn't match.
         plan_states_start = max(0, start_idx + random.randint(-self.seq_len, 0))
-        plan_states_end = start_idx + (max(math.floor(random.random() * len(states_till_end)), self.path_length)
+        plan_states_end = start_idx + (max(math.floor(random.uniform(0.5,1.0) * len(states_till_end)), self.path_length)
                                        if self.is_gc
                                        else int(self.max_traj_length * self.plan_max_trajectory_ratio)) + 1
         # plan_states_end = len(traj["observations"])
@@ -308,6 +311,7 @@ class PlanningDecisionTransformer(DecisionTransformer):
                  plan_indices: Tuple[int, ...] = (0, 1),
                  non_plan_downweighting: float = 0.0,
                  use_goal_space_first_state_token: bool = False,
+                 use_timestep_embedding: bool = True,
                  **kwargs
                  ):
         super().__init__(state_dim, action_dim,
@@ -342,6 +346,7 @@ class PlanningDecisionTransformer(DecisionTransformer):
         self.full_seq_pos_emb = nn.Embedding(3 + plan_length, embedding_dim)
         self.plan_dim = plan_dim
         self.use_two_phase_training = use_two_phase_training
+        self.use_timestep = use_timestep_embedding
         self.goal_indices = torch.tensor(goal_indices, dtype=torch.long)
         self.plan_indices = torch.tensor(plan_indices, dtype=torch.long)
 
@@ -368,33 +373,31 @@ class PlanningDecisionTransformer(DecisionTransformer):
 
     def forward(self, goal, states, actions, returns_to_go, time_steps, plan, padding_mask=None,
                 log_attention=False):
-        if self.non_plan_downweighting < 0:
-            self.downweight_non_plan(3 + self.gs_state, self.plan_length, self.non_plan_downweighting)
         batch_size, seq_len = states.shape[0], states.shape[1]
         device = states.device
 
         # [batch_size, seq_len, emb_dim]
-        # time_emb = self.timestep_emb(time_steps)
+        time_emb = self.timestep_emb(time_steps)
         state_emb_no_time_emb = self.state_emb(states)
         # state_emb_no_time_emb = self.plan_emb(states[:, :, :2])
-        state_emb = state_emb_no_time_emb
-        act_emb = self.action_emb(actions)
+        state_emb = state_emb_no_time_emb + (time_emb if self.use_timestep else 0)
+        act_emb = self.action_emb(actions) + (time_emb if self.use_timestep else 0)
         # remove action conditioning (would this help?)
         # act_emb = torch.zeros (size=act_emb.shape, dtype=torch.float32, device=act_emb.device)
-        returns_emb = self.return_emb(returns_to_go.unsqueeze(-1))
+        returns_emb = self.return_emb(returns_to_go.unsqueeze(-1)) + (time_emb if self.use_timestep else 0)
         for training_phase in range(self.use_two_phase_training + 1):
             plan_pos_emb = self.plan_positional_emb(self.plan_position_ids[:, :plan.shape[1]])
             # make plan relative, accounting for the possibility of actions in plan
             # can also add pos_emb here if don't want the full sequence embedding
-            # if self.plan_length:
-            #     plan_emb = self.plan_emb(torch.cat((
-            #             plan[:, :, :len(self.plan_indices)] - states[:, :1 ,self.plan_indices],
-            #             plan[:, :, len(self.plan_indices):]
-            #     ),dim=-1))
-            # else:
-            #     plan_emb = torch.empty(batch_size, 0, self.embedding_dim, device=device)
-            plan_emb = self.plan_emb(plan) + plan_pos_emb if self.plan_length else \
-                torch.empty(batch_size, 0, self.embedding_dim, device=device)
+            if self.plan_length:
+                plan_emb = self.plan_emb(torch.cat((
+                        plan[:, :, :len(self.plan_indices)] - states[:, :1 ,self.plan_indices],
+                        plan[:, :, len(self.plan_indices):]
+                ),dim=-1))
+            else:
+                plan_emb = torch.empty(batch_size, 0, self.embedding_dim, device=device)
+            # plan_emb = self.plan_emb(plan) + plan_pos_emb if self.plan_length else \
+            #     torch.empty(batch_size, 0, self.embedding_dim, device=device)
 
             # handle goal
             # we do this inserting the goal into the state, embedding it then subtracting the state embedding
@@ -407,6 +410,9 @@ class PlanningDecisionTransformer(DecisionTransformer):
             if self.gs_state:
                 goal_token = self.goal_emb(
                     torch.cat((states[:, :1, self.goal_indices], goal[:, :1, self.goal_indices]), dim=1))
+                # goal_token = self.goal_emb(
+                #     torch.cat((goal[:, :1, self.goal_indices],
+                #                goal[:, :1, self.goal_indices] - states[:, :1, self.goal_indices]), dim=1))
             else:
                 goal_token = self.plan_emb(goal[:, :1, self.goal_indices] - states[:, :1, self.goal_indices])
             # if(batch_size == 1):
@@ -461,29 +467,7 @@ class PlanningDecisionTransformer(DecisionTransformer):
                 out_states = torch.cat([out[:, start:start+1], out[:, (start + 3 + self.plan_length)::3]], dim=1)
                 out_actions = self.action_head(out_states) * self.max_action  # [batch_size, seq_len, action_dim]
 
-        if self.non_plan_downweighting < 0:
-            self.downweight_non_plan(3+self.gs_state, self.plan_length, 0.0)
-
         return plan, out_actions, attention_maps
-
-
-def get_env_goal(env):
-    env_id = env.spec.id
-    if "antmaze" in env_id:
-        # print(env.target_goal)
-        # return [-1.1, -1.1]
-        # return [-1.8, -2.3]
-        return [0, 0]
-        # return env.target_goal
-    if "kitchen" in env_id:
-        goal = np.empty((30,))
-        for task in env.TASK_ELEMENTS:
-            subtask_indices = kitchen_envs.OBS_ELEMENT_INDICES[task]
-            subtask_goals = kitchen_envs.OBS_ELEMENT_GOALS[task]
-            goal[subtask_indices] = subtask_goals
-    else:
-        raise ValueError("Expected antmaze or kitchen env, found ", env_id)
-
 
 # Training and evaluation logic
 @torch.no_grad()
@@ -510,7 +494,7 @@ def eval_rollout(
     time_steps = time_steps.view(1, -1)
 
     states[:, 0] = torch.as_tensor(env.reset(), device=device)
-    print("START: ", states[0, 0][:3])
+    # print("START: ", states[0, 0][:3])
     returns[:, 0] = torch.as_tensor(target_return, device=device)
 
     episode_return, episode_len = 0.0, 0.0
@@ -520,8 +504,11 @@ def eval_rollout(
     pt_frames = []
     plan = None
     plan_paths = []
-    goal_unmodified = get_env_goal(env)
+    goal_unmodified = env.target_goal
     goal = torch.tensor(goal_unmodified, dtype=torch.float32, device=device).unsqueeze(0).unsqueeze(0)
+
+    if pdt_model.non_plan_downweighting < 0:
+        pdt_model.downweight_non_plan(3 + pdt_model.gs_state, pdt_model.plan_length, pdt_model.non_plan_downweighting)
 
     for step in range(min(pdt_model.episode_len, early_stop_step)):
         # Generate the planning token every 20 steps (partial replanning)
@@ -568,6 +555,7 @@ def eval_rollout(
                     pt_frames.append(pt_frame)
 
         if record_video:
+            # env.render(mode='human')
             render_frames.append(env.render(mode="rgb_array"))
 
         # actions_noisy = actions + torch.randn(actions.shape, device=device) * action_noise_scale * 0.5
@@ -634,6 +622,9 @@ def eval_rollout(
     # with open(f"./visualisations/debug_attention/attention_maps_{ep_id}.pkl", 'wb') as f:
     #     pickle.dump(attention_map_all_raw, f)
 
+    if pdt_model.non_plan_downweighting < 0:
+        pdt_model.downweight_non_plan(3 + pdt_model.gs_state, pdt_model.plan_length, 0.0)
+
     ant_path = states[0, :int(episode_len + 1)].cpu().numpy()
     return episode_return, episode_len, attention_map_frames, render_frames, pt_frames, plan_paths, ant_path, \
         goal_unmodified
@@ -656,7 +647,8 @@ def train(config: TrainConfig):
         use_log_distance=config.use_log_distance_plans,
         plan_type=config.plan_type,
         is_goal_conditioned=config.is_goal_conditioned,
-        plans_use_actions=config.plans_use_actions
+        plans_use_actions=config.plans_use_actions,
+        plan_indices=config.plan_indices
     )
 
     trainloader = DataLoader(
@@ -671,7 +663,6 @@ def train(config: TrainConfig):
         state_mean=dataset.state_mean,
         state_std=dataset.state_std,
         reward_scale=config.reward_scale,
-        normalize_target=config.is_goal_conditioned
     )
 
     # DT model & optimizer & scheduler setup
@@ -695,7 +686,8 @@ def train(config: TrainConfig):
         goal_indices=config.goal_indices,
         plan_indices=config.plan_indices,
         non_plan_downweighting=config.non_plan_downweighting,
-        use_goal_space_first_state_token=config.use_goal_space_first_state_token
+        use_goal_space_first_state_token=config.use_goal_space_first_state_token,
+        use_timestep_embedding=config.use_timestep_embedding
     ).to(config.device)
 
     optim = torch.optim.AdamW(
@@ -809,7 +801,7 @@ def train(config: TrainConfig):
                 plot_and_log_paths(
                     image_path=config.bg_image,
                     start=states[batch_index, 0, config.ant_path_viz_indices].cpu(),
-                    goal=goal[batch_index, 0].cpu(),
+                    goal=goal[batch_index, 0].cpu()[np.array(config.path_viz_indices)],
                     plan_paths=paths,
                     ant_path=states_till_end[batch_index, :steps_left[batch_index], config.ant_path_viz_indices].cpu(),
                     output_folder=f'./visualisations/PDTv2-oracle-plan/{config.env_name}/{config.run_name}/train',
@@ -874,13 +866,15 @@ def train(config: TrainConfig):
                     # unscale for logging & correct normalized score computation
                     eval_returns.append(eval_return / config.reward_scale)
                     ant_path_pos = ant_path[:, config.ant_path_viz_indices]
-                    eval_goal_dists.append(np.linalg.norm(ant_path_pos[-1] - goal))
+                    eval_goal_dists.append(
+                        np.linalg.norm(ant_path[-1, config.goal_indices] - np.array(goal)[list(config.goal_indices)])
+                    )
                     plan_paths = [dataset.convert_plan_to_path(path, config.plan_path_viz_indices)
                                   for path in plan_paths]
                     plot_and_log_paths(
                         image_path=config.bg_image,
                         start=ant_path_pos[0],
-                        goal=goal,
+                        goal=goal[np.array(config.path_viz_indices)],
                         plan_paths=plan_paths,
                         ant_path=ant_path_pos,
                         output_folder=video_folder,
@@ -895,6 +889,7 @@ def train(config: TrainConfig):
                         eval_env.get_normalized_score(np.array(eval_returns)) * 100
                 )
                 print(f"eval/{target_return}_return_mean", np.mean(eval_returns))
+                print(f"eval/{target_return}_normalized_score_mean", np.mean(normalized_scores))
                 if num_episodes == config.eval_episodes:
                     wandb.log(
                         {

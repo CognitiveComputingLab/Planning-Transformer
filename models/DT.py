@@ -23,6 +23,8 @@ from tqdm.auto import trange
 import wandb
 from models.utils import log_attention_maps
 
+from d4rl.kitchen import kitchen_envs
+
 
 @dataclass
 class TrainConfig:
@@ -136,28 +138,43 @@ def scale_reward(reward, reward_scale):
     return reward_scale * reward
 
 
-class TransformTarget(gym.Wrapper):
-    def __init__(self, env, f):
+class MakeGoalEnv(gym.Wrapper):
+    def __init__(self, env, normalize, state_mean, state_std):
         super().__init__(env)
-        assert callable(f)
-        self.f = f
+        assert callable(normalize)
+        self.normalize = normalize
+        self.state_mean = state_mean
+        self.state_std = state_std
 
     @property
     def target_goal(self):
-        return self.f(self.env.target_goal)
+        env_id = self.env.spec.id
+        if "antmaze" in env_id:
+            # print(env.target_goal)
+            # return [-1.1, -1.1]
+            # return [-1.8, -2.3]
+            # return [0, 0]
+            return normalize_state(self.env.target_goal, self.state_mean[0, :2], self.state_std[0, :2])
+        if "kitchen" in env_id:
+            goal = np.zeros(self.state_mean[0].shape)
+            for task in self.env.TASK_ELEMENTS:
+                subtask_indices = kitchen_envs.OBS_ELEMENT_INDICES[task]
+                subtask_goals = kitchen_envs.OBS_ELEMENT_GOALS[task]
+                goal[subtask_indices] = subtask_goals
+            return normalize_state(goal, self.state_mean[0], self.state_std[0])
+        else:
+            raise ValueError("Expected antmaze or kitchen env, found ", env_id)
 
 def wrap_env(
         env: gym.Env,
         state_mean: Union[np.ndarray, float] = 0.0,
         state_std: Union[np.ndarray, float] = 1.0,
-        reward_scale: float = 1.0,
-        normalize_target: bool = False,
+        reward_scale: float = 1.0
 ) -> gym.Env:
     env = gym.wrappers.TransformObservation(env, partial(normalize_state, state_mean=state_mean, state_std=state_std))
     if reward_scale != 1.0:
         env = gym.wrappers.TransformReward(env, partial(scale_reward, reward_scale=reward_scale))
-    if normalize_target:
-        env = TransformTarget(env, partial(normalize_state, state_mean=state_mean[0][:2], state_std=state_std[0][:2]))
+    env = MakeGoalEnv(env, normalize_state, state_mean, state_std)
     return env
 
 # some utils functionalities specific for Decision Transformer

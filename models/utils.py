@@ -114,7 +114,10 @@ def create_grid(timesteps, dynamic_padding=True):
 def arrays_to_video(timesteps_arrays, output_file, scale_factor=1.0, fps=30.0, use_grid=True):
     # Pre-compute video size based on the largest grid dimensions after scaling
     grids = [create_grid(timestep) for timestep in timesteps_arrays] if use_grid else timesteps_arrays
-    video_size = tuple(int(max(grid.shape[i] for grid in grids) * scale_factor) for i in [1, 0])
+    grids = [np.array(grid) for grid in grids if len(grid) > 0]
+    if len(grids) == 0: return True
+    max_dims = [max(grid.shape[i] for grid in grids) for i in [1, 0]]
+    video_size = tuple(int(dim * scale_factor) for dim in max_dims)
 
     # Initialize VideoWriter with dynamic video size
     out = cv2.VideoWriter(output_file, cv2.VideoWriter_fourcc(*'MP4V'), fps, video_size)
@@ -141,7 +144,7 @@ def arrays_to_video(timesteps_arrays, output_file, scale_factor=1.0, fps=30.0, u
     out.release()  # Release the VideoWriter
 
 
-def normalise_maze_coords(X, mean, std):
+def normalise_coords(X, mean, std):
     return (np.array(X) - mean) / std
 
 
@@ -150,10 +153,17 @@ def plot_and_log_paths(image_path, start, goal, plan_paths, ant_path, output_fol
     # if the output folder doesn't exist make it
     os.makedirs(output_folder, exist_ok=True)
 
-
     # Create figure and axes
     fig, ax = plt.subplots()
-    tl, br = normalise_maze_coords([[-6, -6], [26, 26]], pos_mean, pos_std)
+    if 'antmaze' in image_path:
+        if 'large' in image_path:
+            tl, br = normalise_coords([[-6, -6], [42, 30]], pos_mean, pos_std)
+        elif 'medium' in image_path:
+            tl, br = normalise_coords([[-6, -6], [26, 26]], pos_mean, pos_std)
+        else:
+            tl, br = normalise_coords([[-6, -6], [14, 14]], pos_mean, pos_std)
+    else:
+        tl, br = normalise_coords([[-0.32, -0.85], [-0.22, 1.35]], pos_mean, pos_std)
 
     # Load the background image
     if image_path is not None:
@@ -184,7 +194,7 @@ def plot_and_log_paths(image_path, start, goal, plan_paths, ant_path, output_fol
         norm = plt.Normalize(0, 1)
         cmap = plt.get_cmap('rainbow')
         for i in range(len(ant_path)):
-            plt.plot(ant_path[i:i + 2, 0], ant_path[i:i + 2, 1], color=cmap(norm(i / (len(ant_path) - 2))),
+            plt.plot(ant_path[i:i + 2, 0], ant_path[i:i + 2, 1], color=cmap(norm(i / (len(ant_path)))),
                      linewidth=2)
 
     # print([(i, float(f"{rotate_orientation_vectors(o)[1][2]:.1f}")) for i,o in enumerate(orientation_path)])
@@ -239,7 +249,7 @@ def plot_and_log_paths_3d(image_path, start, goal, plan_paths, ant_path, orienta
     fig, ax = plt.subplots(subplot_kw={'projection': '3d'},figsize=(12, 8))
     ax.view_init(elev=60, azim=-45)
 
-    tl, br = normalise_maze_coords([[-6, -6], [26, 26]], pos_mean[:2], pos_std[:2])
+    tl, br = normalise_coords([[-6, -6], [26, 26]], pos_mean[:2], pos_std[:2])
     ax.set_xlim(np.array([tl[0], br[0]])*0.5)
     ax.set_ylim(np.array([tl[1], br[1]])*0.5)
     ax.set_zlim([0, 2])
