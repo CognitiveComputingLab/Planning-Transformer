@@ -11,7 +11,7 @@ embedding_dim: 128
 embedding_dropout: 0.1 #0.1
 env_name: "halfcheetah-medium-expert-v2"
 episode_len: 1000
-eval_episodes: 15 #15
+eval_episodes: 50 #15
 eval_every: 5000
 eval_seed: 43 #42 or -1 to seed every run the same
 group: "dt-halfcheetah-medium-expert-PDT"
@@ -33,7 +33,7 @@ weight_decay: 0.0001
 log_attn_weights: 1
 log_attn_every: 250
 record_video: 1
-run_name: "run_1"
+run_name: "run_4"
 eval_offline_every: 5000
 bg_image: "./bg_images/antmaze_medium_bg.png"
 eval_path_plot_every: 2500
@@ -49,12 +49,15 @@ plan_type: "split" #split or combined
 use_two_phase_training: false # false
 is_goal_conditioned: false # true
 #goal_indices: [0,1]
-#plan_indices: []
-#path_viz_indices: []
-plans_use_actions: false
-non_plan_downweighting: 0 #-2
+plan_indices: []
+path_viz_indices: []
+plans_use_actions: true
+non_plan_downweighting: -2 #-2
 use_goal_space_first_state_token: true
 use_timestep_embedding: true
+
+checkpoint_to_load: PDT-oracle-halfcheetah-medium-expert-v2-17f262e2
+checkpoint_step_to_load: 99999
 
 #checkpoint_to_load: PDT-oracle-halfcheetah-medium-v2-7c0083b7 #plan actions
 #checkpoint_step_to_load: 30000
