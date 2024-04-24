@@ -162,19 +162,23 @@ def plot_and_log_paths(image_path, start, goal, plan_paths, ant_path, output_fol
             tl, br = normalise_coords([[-6, -6], [26, 26]], pos_mean, pos_std)
         else:
             tl, br = normalise_coords([[-6, -6], [14, 14]], pos_mean, pos_std)
-    else:
+    elif 'kitchen' in image_path:
         tl, br = normalise_coords([[-0.32, -0.85], [-0.22, 1.35]], pos_mean, pos_std)
+    else:
+        tl, br = normalise_coords([[-0.5, -0.5], [-0.5, 0.5]], pos_mean, pos_std)
 
     # Load the background image
     if image_path is not None:
         bg_image = plt.imread(image_path)
         ax.imshow(bg_image, extent=(tl[0], br[0], tl[1], br[1]))
 
-    goal = np.array(goal)
+
 
     # Mark start and goal
     ax.plot(start[0], start[1], 'go', markersize=10)  # Start in green
-    ax.scatter(goal[0], goal[1], s=100, c='silver', marker='*', zorder=5)  # Goal in silver
+    if goal:
+        goal = np.array(goal)
+        ax.scatter(goal[0], goal[1], s=100, c='silver', marker='*', zorder=5)  # Goal in silver
 
     # Plot plan paths with different coloured lines and dots
     for i, plan_path in enumerate(plan_paths):

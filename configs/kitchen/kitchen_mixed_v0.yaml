@@ -3,18 +3,18 @@ batch_size: 128 #64 #256
 betas:
 - 0.9
 - 0.999
-checkpoints_path: "./checkpoints/kitchen_partial/PDT-oracle"
+checkpoints_path: "./checkpoints/kitchen_mixed/PDT-oracle"
 clip_grad: 0.25
 deterministic_torch: false
 device: cuda
-embedding_dim: 128
-embedding_dropout: 0.0 #0.1
-env_name: "kitchen-partial-v0"
-episode_len: 1000
+embedding_dim: 256
+embedding_dropout: 0.1 #0.1
+env_name: "kitchen-mixed-v0"
+episode_len: 280
 eval_episodes: 15 #15
 eval_every: 5000
 eval_seed: 43 #42 or -1 to seed every run the same
-group: "dt-kitchen-partial-PDT"
+group: "dt-kitchen-mixed-PDT"
 learning_rate: 0.0002 #0.0001 #0.004
 max_action: 1.0
 name: "PDT-oracle"
@@ -33,7 +33,7 @@ weight_decay: 0.0001
 log_attn_weights: 1
 log_attn_every: 250
 record_video: 1
-run_name: "run_17"
+run_name: "run_10"
 eval_offline_every: 5000
 bg_image: "./bg_images/kitchen_bg.png"
 eval_path_plot_every: 2500

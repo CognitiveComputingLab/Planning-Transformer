@@ -1,10 +1,7 @@
 """
 Modified version of the single file implementation of Decision transformer as provided by the CORL team
 """
-import random
 import warnings
-
-import numpy as np
 
 warnings.filterwarnings('ignore')
 warnings.filterwarnings('ignore', category=DeprecationWarning, module='numpy.*')
@@ -23,7 +20,6 @@ import d4rl  # noqa
 from models.DT import *
 from models.utils import *
 from math import inf
-
 
 
 @dataclass
@@ -100,7 +96,7 @@ class TrainConfig:
     plan_type: Optional[str] = "combined"
     plan_use_full_state: Optional[bool] = False
     plan_indices: Optional[Tuple[int, ...]] = None
-    path_viz_indices: Optional[Tuple[int, int]] = (0, 1)
+    path_viz_indices: Optional[Tuple[int, ...]] = (0, 1)
     plans_use_actions: Optional[bool] = False
     non_plan_downweighting: Optional[float] = 0.0
 
@@ -148,7 +144,8 @@ class TrainConfig:
         self.ant_path_viz_indices = self.path_viz_indices
 
         if not self.is_goal_conditioned:
-            self.goal_indices = (0,)
+            self.goal_indices = []
+
 
 class SequenceManualPlanDataset(SequenceDataset):
     def __init__(self, env_name: str, seq_len: int = 10, reward_scale: float = 1.0, path_length=10,
@@ -169,9 +166,10 @@ class SequenceManualPlanDataset(SequenceDataset):
         self.plan_type = plan_type
 
         self.embedding_dim = embedding_dim
-        traj_dists = np.array([self.traj_distance(traj, plan_indices) for traj in self.dataset])
-        # self.sample_prob = traj_dists / traj_dists.sum()
-        self.sample_prob *= traj_dists / traj_dists.sum()
+        if self.is_gc:
+            traj_dists = np.array([self.traj_distance(traj, plan_indices) for traj in self.dataset])
+            # self.sample_prob = traj_dists / traj_dists.sum()
+            self.sample_prob *= traj_dists / traj_dists.sum()
         self.sample_prob /= self.sample_prob.sum()
         self.expected_cum_reward = np.array(
             [traj['returns'][0] * p for traj, p in zip(self.dataset, self.sample_prob)]
@@ -228,9 +226,10 @@ class SequenceManualPlanDataset(SequenceDataset):
         # create the plan from the current state minus some random amount to at most half the max episode length
         # we subtract this random amount to make sure eval doesn't go OOD when the start state doesn't match.
         plan_states_start = max(0, start_idx + random.randint(-self.seq_len, 0))
-        plan_states_end = start_idx + (max(math.floor(random.uniform(0.5,1.0) * len(states_till_end)), self.path_length)
-                                       if self.is_gc
-                                       else int(self.max_traj_length * self.plan_max_trajectory_ratio)) + 1
+        plan_states_end = start_idx + (
+            max(math.floor(random.uniform(0.5, 1.0) * len(states_till_end)), self.path_length)
+            if self.is_gc
+            else int(self.max_traj_length * self.plan_max_trajectory_ratio)) + 1
         # plan_states_end = len(traj["observations"])
         plan_states = traj["observations"][plan_states_start:plan_states_end]
         plan_returns = traj["returns"][plan_states_start:plan_states_end] * self.reward_scale
@@ -255,16 +254,16 @@ class SequenceManualPlanDataset(SequenceDataset):
             #     # since the plan already implements this logic we just select the last plan state
             #     goal = plan_states[-1:]
         else:
-            goal = np.zeros((1, 1))
+            goal = np.zeros((1, 1), dtype=np.float32)
 
+        plan_states = plan_states[:int(self.max_traj_length * self.plan_max_trajectory_ratio)]
+        plan_actions = traj["actions"][plan_states_start:plan_states_start + len(plan_states)] \
+            if self.plans_use_actions else None
         if self.is_gc:
-            plan_states = plan_states[:int(self.max_traj_length * self.plan_max_trajectory_ratio)]
-            plan_actions = traj["actions"][plan_states_start:plan_states_start + len(plan_states)] \
-                if self.plans_use_actions else None
             plan = self.create_plan(plan_states, actions=plan_actions).astype(np.float32)
         else:
             plan_returns = plan_returns[:int(self.max_traj_length * self.plan_max_trajectory_ratio)]
-            plan = self.create_plan(plan_states, plan_returns).astype(np.float32)
+            plan = self.create_plan(plan_states, returns=plan_returns, actions=plan_actions).astype(np.float32)
 
         # pad up to seq_len if needed, padding is masked during training
         mask = np.hstack(
@@ -323,12 +322,15 @@ class PlanningDecisionTransformer(DecisionTransformer):
                          residual_dropout=residual_dropout,
                          **kwargs
                          )
-
+        self.goal_cond = len(goal_indices) > 0
         self.gs_state = use_goal_space_first_state_token
+        if not self.goal_cond:
+            self.gs_state = False
+
         self.blocks = nn.ModuleList(
             [
                 TransformerBlock(
-                    seq_len=3 * seq_len + plan_length + 1 + self.gs_state,  # Adjusted for the planning token and goal
+                    seq_len=3 * seq_len + plan_length + self.goal_cond + self.gs_state,  # Adjusted for the planning token and goal
                     embedding_dim=embedding_dim,
                     num_heads=num_heads,
                     attention_dropout=attention_dropout,
@@ -353,7 +355,7 @@ class PlanningDecisionTransformer(DecisionTransformer):
         # Create position IDs for plan once
         self.register_buffer('plan_position_ids', torch.arange(0, self.plan_length).unsqueeze(0))
         self.register_buffer('full_seq_pos_ids',
-                             torch.arange(0, 3 * seq_len + plan_length + 1 + self.gs_state).unsqueeze(0))
+                             torch.arange(0, 3 * seq_len + plan_length + self.goal_cond + self.gs_state).unsqueeze(0))
 
         # increase focus on plan by downweighting non plan tokens
         self.original_causal_masks = [block.causal_mask for block in self.blocks]
@@ -391,9 +393,9 @@ class PlanningDecisionTransformer(DecisionTransformer):
             # can also add pos_emb here if don't want the full sequence embedding
             if self.plan_length:
                 plan_emb = self.plan_emb(torch.cat((
-                        plan[:, :, :len(self.plan_indices)] - states[:, :1 ,self.plan_indices],
-                        plan[:, :, len(self.plan_indices):]
-                ),dim=-1))
+                    plan[:, :, :len(self.plan_indices)] - states[:, :1, self.plan_indices],
+                    plan[:, :, len(self.plan_indices):]
+                ), dim=-1)) + plan_pos_emb
             else:
                 plan_emb = torch.empty(batch_size, 0, self.embedding_dim, device=device)
             # plan_emb = self.plan_emb(plan) + plan_pos_emb if self.plan_length else \
@@ -407,14 +409,18 @@ class PlanningDecisionTransformer(DecisionTransformer):
             # goal_token = (self.state_emb(goal_modified_state_0) - state_emb_no_time_emb[:, 0:1, :]).detach()
             # goal_token = torch.zeros(state_emb.shape, dtype=torch.float32, device=goal.device)[:,:1]
             # goal_token[:,:1,:2]=goal[:, :1, self.goal_indices] - states[:, :1, self.goal_indices]
-            if self.gs_state:
-                goal_token = self.goal_emb(
-                    torch.cat((states[:, :1, self.goal_indices], goal[:, :1, self.goal_indices]), dim=1))
-                # goal_token = self.goal_emb(
-                #     torch.cat((goal[:, :1, self.goal_indices],
-                #                goal[:, :1, self.goal_indices] - states[:, :1, self.goal_indices]), dim=1))
+            if self.goal_cond:
+                if self.gs_state:
+                    goal_token = self.goal_emb(
+                        torch.cat((states[:, :1, self.goal_indices], goal[:, :1, self.goal_indices]), dim=1))
+                    # goal_token = self.goal_emb(
+                    #     torch.cat((goal[:, :1, self.goal_indices],
+                    #                goal[:, :1, self.goal_indices] - states[:, :1, self.goal_indices]), dim=1))
+                else:
+                    goal_token = self.goal_emb(goal[:, :1, self.goal_indices] - states[:, :1, self.goal_indices])
             else:
-                goal_token = self.plan_emb(goal[:, :1, self.goal_indices] - states[:, :1, self.goal_indices])
+                goal_token = torch.empty(batch_size, 0, self.embedding_dim, device=device)
+
             # if(batch_size == 1):
             #     print(goal_token)
             # goal_token = self.goal_emb(goal[:, :1, self.goal_indices])
@@ -458,16 +464,17 @@ class PlanningDecisionTransformer(DecisionTransformer):
 
             out = self.out_norm(out)
 
+            start = 1 + self.goal_cond + self.gs_state
             if training_phase == 0:
                 # for input to the planning_head we use the sequence shifted one to the left of the plan_sequence
-                plan = self.planning_head(out[:, 2 + self.gs_state: 2 + self.gs_state + self.plan_length])
+                plan = self.planning_head(out[:, start: start + self.plan_length])
             if training_phase == self.use_two_phase_training:
                 # predict actions only from the state embeddings
-                start = 2 + self.gs_state
-                out_states = torch.cat([out[:, start:start+1], out[:, (start + 3 + self.plan_length)::3]], dim=1)
+                out_states = torch.cat([out[:, start:start + 1], out[:, (start + 3 + self.plan_length)::3]], dim=1)
                 out_actions = self.action_head(out_states) * self.max_action  # [batch_size, seq_len, action_dim]
 
         return plan, out_actions, attention_maps
+
 
 # Training and evaluation logic
 @torch.no_grad()
@@ -582,8 +589,11 @@ def eval_rollout(
             attention_map_dist = np.linalg.norm(attention_map_all_raw[-1] - attention_map_all_raw[-2])
             noise = min(1.0, max(action_noise_scale, (attention_map_dist - 3.5) / (2.5 - 3.5)))
 
-        # action_noise = np.random.normal(size=predicted_action.shape, scale=action_noise_scale)
-        action_noise = np.random.normal(size=predicted_action.shape, scale=noise)
+        if action_noise_scale != 0:
+            # action_noise = np.random.normal(size=predicted_action.shape, scale=action_noise_scale)
+            action_noise = np.random.normal(size=predicted_action.shape, scale=noise)
+        else:
+            action_noise = 0
 
         next_state, reward, done, info = env.step(predicted_action + action_noise)
         # next_state, reward, done, info = env.step(predicted_action)
@@ -684,7 +694,7 @@ def train(config: TrainConfig):
         plan_length=dataset.plan_length,
         use_two_phase_training=config.use_two_phase_training,
         goal_indices=config.goal_indices,
-        plan_indices=config.plan_indices,
+        plan_indices=range(0, dataset.state_mean.shape[1]) if config.plan_indices is None else config.plan_indices,
         non_plan_downweighting=config.non_plan_downweighting,
         use_goal_space_first_state_token=config.use_goal_space_first_state_token,
         use_timestep_embedding=config.use_timestep_embedding
@@ -789,27 +799,29 @@ def train(config: TrainConfig):
         # print("train_loss", main_loss.item())
 
         if step % config.eval_offline_every == 0:
-            for batch_index in random.sample(range(config.batch_size), 10):
-                paths = []
-                if dataset.plan_length:
-                    # select batch_index of the batch and first of the plan sequence
-                    for i, plan_instance in enumerate([predicted_plan, plan]):
-                        plan_instance = plan_instance[batch_index].detach().cpu()
-                        paths.append(dataset.convert_plan_to_path(plan_instance, config.plan_path_viz_indices))
+            if len(config.ant_path_viz_indices) >=2:
+                for batch_index in random.sample(range(config.batch_size), 10):
+                    paths = []
+                    if dataset.plan_length:
+                        # select batch_index of the batch and first of the plan sequence
+                        for i, plan_instance in enumerate([predicted_plan, plan]):
+                            plan_instance = plan_instance[batch_index].detach().cpu()
+                            paths.append(dataset.convert_plan_to_path(plan_instance, config.plan_path_viz_indices))
 
-                # for all variables we use the first of the batch
-                plot_and_log_paths(
-                    image_path=config.bg_image,
-                    start=states[batch_index, 0, config.ant_path_viz_indices].cpu(),
-                    goal=goal[batch_index, 0].cpu()[np.array(config.path_viz_indices)],
-                    plan_paths=paths,
-                    ant_path=states_till_end[batch_index, :steps_left[batch_index], config.ant_path_viz_indices].cpu(),
-                    output_folder=f'./visualisations/PDTv2-oracle-plan/{config.env_name}/{config.run_name}/train',
-                    index=f"step={step}-batch_idx={batch_index}",
-                    log_to_wandb=False,
-                    pos_mean=dataset.state_mean[0, config.ant_path_viz_indices],
-                    pos_std=dataset.state_std[0, config.ant_path_viz_indices]
-                )
+                    # for all variables we use the first of the batch
+                    plot_and_log_paths(
+                        image_path=config.bg_image,
+                        start=states[batch_index, 0, config.ant_path_viz_indices].cpu(),
+                        goal=goal[batch_index, 0].cpu()[
+                            np.array(config.path_viz_indices)] if config.is_goal_conditioned else None,
+                        plan_paths=paths,
+                        ant_path=states_till_end[batch_index, :steps_left[batch_index], config.ant_path_viz_indices].cpu(),
+                        output_folder=f'./visualisations/PDTv2-oracle-plan/{config.env_name}/{config.run_name}/train',
+                        index=f"step={step}-batch_idx={batch_index}",
+                        log_to_wandb=False,
+                        pos_mean=dataset.state_mean[0, config.ant_path_viz_indices],
+                        pos_std=dataset.state_std[0, config.ant_path_viz_indices]
+                    )
 
         wandb.log(
             {
@@ -865,25 +877,27 @@ def train(config: TrainConfig):
                                         scale_factor=1, fps=1, use_grid=False)
                     # unscale for logging & correct normalized score computation
                     eval_returns.append(eval_return / config.reward_scale)
-                    ant_path_pos = ant_path[:, config.ant_path_viz_indices]
+
                     eval_goal_dists.append(
                         np.linalg.norm(ant_path[-1, config.goal_indices] - np.array(goal)[list(config.goal_indices)])
                     )
-                    plan_paths = [dataset.convert_plan_to_path(path, config.plan_path_viz_indices)
-                                  for path in plan_paths]
-                    plot_and_log_paths(
-                        image_path=config.bg_image,
-                        start=ant_path_pos[0],
-                        goal=goal[np.array(config.path_viz_indices)],
-                        plan_paths=plan_paths,
-                        ant_path=ant_path_pos,
-                        output_folder=video_folder,
-                        index=f"t={step}-ep={ep_id}",
-                        log_to_wandb=False,
-                        pos_mean=dataset.state_mean[0, config.ant_path_viz_indices],
-                        pos_std=dataset.state_std[0, config.ant_path_viz_indices],
-                        orientation_path=ant_path[:, 3:7] if "antmaze" in config.env_name else None
-                    )
+                    if len(config.ant_path_viz_indices) >=2:
+                        ant_path_pos = ant_path[:, config.ant_path_viz_indices]
+                        plan_paths = [dataset.convert_plan_to_path(path, config.plan_path_viz_indices)
+                                      for path in plan_paths]
+                        plot_and_log_paths(
+                            image_path=config.bg_image,
+                            start=ant_path_pos[0],
+                            goal=goal[np.array(config.path_viz_indices)] if config.is_goal_conditioned else None,
+                            plan_paths=plan_paths,
+                            ant_path=ant_path_pos,
+                            output_folder=video_folder,
+                            index=f"t={step}-ep={ep_id}",
+                            log_to_wandb=False,
+                            pos_mean=dataset.state_mean[0, config.ant_path_viz_indices],
+                            pos_std=dataset.state_std[0, config.ant_path_viz_indices],
+                            orientation_path=ant_path[:, 3:7] if "antmaze" in config.env_name else None
+                        )
 
                 normalized_scores = (
                         eval_env.get_normalized_score(np.array(eval_returns)) * 100

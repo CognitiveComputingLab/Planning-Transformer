@@ -163,7 +163,8 @@ class MakeGoalEnv(gym.Wrapper):
                 goal[subtask_indices] = subtask_goals
             return normalize_state(goal, self.state_mean[0], self.state_std[0])
         else:
-            raise ValueError("Expected antmaze or kitchen env, found ", env_id)
+            return np.zeros((1, 1), dtype=np.float32)
+            # raise ValueError("Expected antmaze or kitchen env, found ", env_id)
 
 def wrap_env(
         env: gym.Env,
