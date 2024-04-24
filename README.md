@@ -10,7 +10,7 @@ Codebase for the Planning-Transformer advanced project.
    1. Download the MuJoCo version 2.1 binaries for [Linux](https://mujoco.org/download/mujoco210-linux-x86_64.tar.gz) or [OSX](https://mujoco.org/download/mujoco210-macos-x86_64.tar.gz)
    1. Extract the downloaded mujoco210 directory into ~/.mujoco/mujoco210 (extract all and rename parent folder to .mujuco)
    1. Add mujuco to environment variables by running `export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/home/jclinton/.mujoco/mujoco210/bin`in terminal
-   1. If on WSL/Ubuntu run `sudo apt-get update && sudo apt install libosmesa6-dev libgl1-mesa-glx libglfw3 patchelf`
+   1. If on WSL/Ubuntu run `sudo apt-get update && sudo apt install libosmesa6-dev libgl1-mesa-glx libglfw3 patchelf libsm6 qt6-base-dev`
    1. Make sure gcc is installed. Otherwise, install with `sudo apt update && sudo apt install build-essential -y`
    1. If you get any errors about QT try
       2. `pip uninstall PyQt5 opencv-python & pip install opencv-python ==4.9.0.80`
