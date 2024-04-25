@@ -23,7 +23,7 @@ num_layers: 3
 num_workers: 4
 project: "CORL"
 residual_dropout: 0.15 #0.1
-reward_scale: 1.0
+reward_scale: 0.25
 seq_len: 10
 target_returns: [4.0]
 train_seed: 16 #10
@@ -33,7 +33,7 @@ weight_decay: 0.0001
 log_attn_weights: 1
 log_attn_every: 250
 record_video: 1
-run_name: "run_17"
+run_name: "run_18"
 eval_offline_every: 5000
 bg_image: "./bg_images/kitchen_bg.png"
 eval_path_plot_every: 2500
@@ -42,7 +42,7 @@ plan_bar_visualisation: false
 replanning_interval: 10 #80
 num_eval_videos: 0 # doesn't work for kitchen so don't bother
 action_noise_scale: 0.0 # 0.4
-use_log_distance_plans: true # true
+use_log_distance_plans: false # true
 plan_max_trajectory_ratio: 0.5 # 0.5
 state_noise_scale: 0.0 # 0.0
 plan_type: "split" #split
@@ -54,4 +54,4 @@ path_viz_indices: [23,24]
 plans_use_actions: true
 non_plan_downweighting: 0 #-2
 use_goal_space_first_state_token: true
-use_timestep_embedding: true
+use_timestep_embedding: false

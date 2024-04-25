@@ -176,7 +176,7 @@ def plot_and_log_paths(image_path, start, goal, plan_paths, ant_path, output_fol
 
     # Mark start and goal
     ax.plot(start[0], start[1], 'go', markersize=10)  # Start in green
-    if goal:
+    if goal is not None:
         goal = np.array(goal)
         ax.scatter(goal[0], goal[1], s=100, c='silver', marker='*', zorder=5)  # Goal in silver
 
