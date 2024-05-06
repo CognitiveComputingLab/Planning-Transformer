@@ -182,10 +182,10 @@ def plot_and_log_paths(image_path, start, goal, plan_paths, ant_path, output_fol
 
     # Plot plan paths with different coloured lines and dots
     for i, plan_path in enumerate(plan_paths):
-        # if len(plan_paths)>10 and (i%4!=0 and i!=len(plan_paths)-1 and i!=0):
-        #     continue
-        if not (i == 0 or i == len(plan_paths)-1):
+        if len(plan_paths)>10 and (i%5!=0 and i!=len(plan_paths)-1 and i!=0):
             continue
+        # if not (i == 0 or i == len(plan_paths)-1):
+        #     continue
         if plan_path.shape[0]:
             # print(plan_path.shape, plan_path)
             ax.plot(plan_path[:, 0], plan_path[:, 1], '-o', linewidth=2, markersize=4, alpha=0.5)

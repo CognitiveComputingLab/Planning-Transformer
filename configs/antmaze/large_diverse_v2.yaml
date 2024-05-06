@@ -33,7 +33,7 @@ weight_decay: 0.0001
 log_attn_weights: 1
 log_attn_every: 250
 record_video: 1
-run_name: "run_13"
+run_name: "run_14"
 eval_offline_every: 5000
 bg_image: "./bg_images/antmaze_large_bg.png"
 eval_path_plot_every: 2500
@@ -55,6 +55,9 @@ plans_use_actions: false
 non_plan_downweighting: 0 #-2
 use_goal_space_first_state_token: true
 use_timestep_embedding: false
+
+checkpoint_to_load: "PDT-oracle-antmaze-large-diverse-v2-361c9fd9"
+checkpoint_step_to_load: 90000
 
 #checkpoint_to_load: "PDT-oracle-antmaze-large-diverse-v2-54bbde96" # Run 9
 #checkpoint_step_to_load: 95000
