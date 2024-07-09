@@ -11,9 +11,10 @@ import torchvision.utils as vutils
 from PIL import Image
 from scipy.spatial.transform import Rotation as R
 from shapely.geometry import LineString
-
+import time
+import re
 import wandb
-
+from tqdm import tqdm
 # matplotlib.use('Agg')
 matplotlib.use('QtAgg')
 import matplotlib.pyplot as plt
@@ -148,13 +149,11 @@ def normalise_coords(X, mean, std):
     return (np.array(X) - mean) / std
 
 
-def plot_and_log_paths(image_path, start, goal, plan_paths, ant_path, output_folder, index, pos_mean, pos_std,
-                       log_to_wandb=True, save_data=True, orientation_path=None):
-    # if the output folder doesn't exist make it
-    os.makedirs(output_folder, exist_ok=True)
-
+def prepare_plot(image_path, pos_mean, pos_std):
     # Create figure and axes
     fig, ax = plt.subplots()
+
+    # Determine the extent of the image based on its path
     if 'antmaze' in image_path:
         if 'large' in image_path:
             tl, br = normalise_coords([[-6, -6], [42, 30]], pos_mean, pos_std)
@@ -172,7 +171,16 @@ def plot_and_log_paths(image_path, start, goal, plan_paths, ant_path, output_fol
         bg_image = plt.imread(image_path)
         ax.imshow(bg_image, extent=(tl[0], br[0], tl[1], br[1]))
 
+    return fig, ax
 
+
+def plot_and_log_paths(image_path, start, goal, plan_paths, ant_path, output_folder, index, pos_mean, pos_std,
+                       log_to_wandb=True, save_data=True, orientation_path=None, last_plan_only=False):
+    if output_folder is not None:
+        # if the output folder doesn't exist make it
+        os.makedirs(output_folder, exist_ok=True)
+
+    fig, ax = prepare_plot(image_path, pos_mean, pos_std)
 
     # Mark start and goal
     ax.plot(start[0], start[1], 'go', markersize=10)  # Start in green
@@ -181,8 +189,10 @@ def plot_and_log_paths(image_path, start, goal, plan_paths, ant_path, output_fol
         ax.scatter(goal[0], goal[1], s=100, c='silver', marker='*', zorder=5)  # Goal in silver
 
     # Plot plan paths with different coloured lines and dots
+    if last_plan_only:
+        plan_paths = plan_paths[-1:]
     for i, plan_path in enumerate(plan_paths):
-        if len(plan_paths)>10 and (i%5!=0 and i!=len(plan_paths)-1 and i!=0):
+        if (i % 40 != 0 and i != len(plan_paths) - 1 and i != 0):
             continue
         # if not (i == 0 or i == len(plan_paths)-1):
         #     continue
@@ -194,18 +204,12 @@ def plot_and_log_paths(image_path, start, goal, plan_paths, ant_path, output_fol
     if ant_path is not None:
         # Plot ant path with rainbow line
         ax.scatter(ant_path[:, 0], ant_path[:, 1], c=np.linspace(0, 1, len(ant_path)), cmap='rainbow', s=2)
-        # To create a gradient line, plot each segment in a loop with colors from the 'rainbow' colormap
-        norm = plt.Normalize(0, 1)
-        cmap = plt.get_cmap('rainbow')
-        for i in range(len(ant_path)):
-            plt.plot(ant_path[i:i + 2, 0], ant_path[i:i + 2, 1], color=cmap(norm(i / (len(ant_path)))),
-                     linewidth=2)
 
     # print([(i, float(f"{rotate_orientation_vectors(o)[1][2]:.1f}")) for i,o in enumerate(orientation_path)])
     if orientation_path is not None:
         orientation = orientation_path[-1]
         forward_rot, up_rot, right_rot = rotate_orientation_vectors(orientation)
-        has_fallen = up_rot[2]<0.25
+        has_fallen = up_rot[2] < 0.25
         # print(up_rot, has_fallen)
         if has_fallen:
             ax.scatter(ant_path[-1][0], ant_path[-1][1], s=100, c='yellow', marker='x', zorder=5)  # mark that it fell
@@ -213,10 +217,11 @@ def plot_and_log_paths(image_path, start, goal, plan_paths, ant_path, output_fol
     # Remove axes for better visualization
     ax.axis('off')
 
-    # Save the image
-    output_path = os.path.join(output_folder, f"path_{index}.png")
-    plt.savefig(output_path, bbox_inches='tight')
-    plt.close()
+    if output_folder is not None:
+        # Save the image
+        output_path = os.path.join(output_folder, f"path_{index}.png")
+        plt.savefig(output_path, bbox_inches='tight')
+        plt.close()
 
     # Log image to wandb
     if log_to_wandb:
@@ -229,9 +234,14 @@ def plot_and_log_paths(image_path, start, goal, plan_paths, ant_path, output_fol
                 {'start': start, 'goal': goal, 'plan_paths': plan_paths, 'ant_path': ant_path, 'mean': pos_mean,
                  'std': pos_std, 'orientation_path': orientation_path}, f)
 
+    if output_folder is None:
+        fig.canvas.draw()
+        output = Image.frombytes('RGB', fig.canvas.get_width_height(), fig.canvas.tostring_rgb())
+        plt.close()
+        return output
+
 
 def rotate_orientation_vectors(orientation):
-
     rotation = R.from_euler("zyx", orientation[:3], degrees=False)
     right = np.array([1, 0, 0])
     forward = np.array([0, 1, 0])
@@ -250,12 +260,12 @@ def plot_and_log_paths_3d(image_path, start, goal, plan_paths, ant_path, orienta
                           pos_mean, pos_std, log_to_wandb=True, save_data=True):
     os.makedirs(output_folder, exist_ok=True)
     bg_image = plt.imread(image_path)
-    fig, ax = plt.subplots(subplot_kw={'projection': '3d'},figsize=(12, 8))
+    fig, ax = plt.subplots(subplot_kw={'projection': '3d'}, figsize=(12, 8))
     ax.view_init(elev=60, azim=-45)
 
     tl, br = normalise_coords([[-6, -6], [26, 26]], pos_mean[:2], pos_std[:2])
-    ax.set_xlim(np.array([tl[0], br[0]])*0.5)
-    ax.set_ylim(np.array([tl[1], br[1]])*0.5)
+    ax.set_xlim(np.array([tl[0], br[0]]) * 0.5)
+    ax.set_ylim(np.array([tl[1], br[1]]) * 0.5)
     ax.set_zlim([0, 2])
 
     ax.set_xlabel('X')
@@ -285,7 +295,7 @@ def plot_and_log_paths_3d(image_path, start, goal, plan_paths, ant_path, orienta
 
     if orientation_path is not None:
         for i, orientation in enumerate(orientation_path):
-            if (i%40 == 0 and i<len(orientation_path)//2) or i==len(orientation_path)-1:
+            if (i % 40 == 0 and i < len(orientation_path) // 2) or i == len(orientation_path) - 1:
                 forward_rot, up_rot, right_rot = rotate_orientation_vectors(orientation)
                 point = np.concatenate((ant_path[i][:2], np.array([1])))
                 plot_orientation_vectors(ax, point, forward_rot, up_rot, right_rot, length=0.4)
@@ -383,3 +393,16 @@ def simplify_path_to_target_points_by_distance_log_scale(path, num_points):
 
     target_indices = np.searchsorted(cum_dists, scaled_log_dists, side='right') - 1
     return path[target_indices]
+
+
+def demo_goal_select(image_path, pos_mean, pos_std):
+    fig, ax = prepare_plot(image_path, pos_mean, pos_std)
+    plt.title('Click on the image to set a goal')
+    print("Please click on the image to set a goal.")
+    goal = plt.ginput(1)
+    print("Goal set at:", goal)
+    ax.plot(goal[0][0], goal[0][1], 'r*', markersize=15)
+    plt.show(block=False)
+    time.sleep(1)
+    plt.close()
+    return goal[0]

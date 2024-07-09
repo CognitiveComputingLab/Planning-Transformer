@@ -139,15 +139,19 @@ def scale_reward(reward, reward_scale):
 
 
 class MakeGoalEnv(gym.Wrapper):
-    def __init__(self, env, normalize, state_mean, state_std):
+    def __init__(self, env, normalize, state_mean, state_std, goal_target=None):
         super().__init__(env)
         assert callable(normalize)
         self.normalize = normalize
         self.state_mean = state_mean
         self.state_std = state_std
+        self.goal_target = goal_target
 
     @property
     def target_goal(self):
+        if self.goal_target is not None:
+            return self.goal_target
+
         env_id = self.env.spec.id
         if "antmaze" in env_id:
             # print(env.target_goal)
@@ -170,12 +174,13 @@ def wrap_env(
         env: gym.Env,
         state_mean: Union[np.ndarray, float] = 0.0,
         state_std: Union[np.ndarray, float] = 1.0,
-        reward_scale: float = 1.0
+        reward_scale: float = 1.0,
+        goal_target: list = None,
 ) -> gym.Env:
     env = gym.wrappers.TransformObservation(env, partial(normalize_state, state_mean=state_mean, state_std=state_std))
     if reward_scale != 1.0:
         env = gym.wrappers.TransformReward(env, partial(scale_reward, reward_scale=reward_scale))
-    env = MakeGoalEnv(env, normalize_state, state_mean, state_std)
+    env = MakeGoalEnv(env, normalize_state, state_mean, state_std, goal_target)
     return env
 
 # some utils functionalities specific for Decision Transformer

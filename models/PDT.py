@@ -20,6 +20,8 @@ import d4rl  # noqa
 from models.DT import *
 from models.utils import *
 from math import inf
+import re
+from pdt_scripts.generate_demo_videos import generate_demo_video
 
 
 @dataclass
@@ -122,8 +124,27 @@ class TrainConfig:
     goal_indices: Optional[Tuple[int, ...]] = (0, 1)
     use_goal_space_first_state_token: Optional[bool] = False
     use_timestep_embedding: Optional[bool] = True
+    demo_mode: Optional[bool] = False
 
     def __post_init__(self):
+        if self.demo_mode and self.checkpoint_to_load is None:
+            regex = re.compile(r'^pdt_checkpoint_step=(\d+)\.pt$')
+            latest_time = 0  # Initial value for comparison
+            latest_folder_name = None
+
+            for dirpath, _, filenames in os.walk(self.checkpoints_path):
+                for filename in filenames:
+                    if match := regex.match(filename):
+                        # Get the modification time of the file
+                        filepath = os.path.join(dirpath, filename)
+                        mod_time = os.path.getmtime(filepath)
+                        # Check if this file is more recent
+                        if mod_time > latest_time:
+                            latest_time = mod_time
+                            latest_folder_name = dirpath.split('/')[-1]
+                            self.checkpoint_step_to_load = int(match.group(1))
+            self.checkpoint_to_load = latest_folder_name
+
         self.name = f"{self.name}-{self.env_name}-{str(uuid.uuid4())[:8]}"
         if self.checkpoint_to_load is not None:
             self.name = self.checkpoint_to_load
@@ -146,6 +167,10 @@ class TrainConfig:
         if not self.is_goal_conditioned:
             self.goal_indices = []
 
+        if self.demo_mode:
+            self.run_name = 'demo'
+            self.num_eval_videos = 3
+            self.eval_early_stop_step = 500
 
 class SequenceManualPlanDataset(SequenceDataset):
     def __init__(self, env_name: str, seq_len: int = 10, reward_scale: float = 1.0, path_length=10,
@@ -667,12 +692,20 @@ def train(config: TrainConfig):
         pin_memory=True,
         num_workers=num_cores,
     )
+    goal_target = None
+    if config.demo_mode:
+        goal_target = np.array(demo_goal_select(
+            image_path=config.bg_image,
+            pos_mean=dataset.state_mean[0, config.ant_path_viz_indices],
+            pos_std=dataset.state_std[0, config.ant_path_viz_indices],
+        ))
     # evaluation environment with state & reward preprocessing (as in dataset above)
     eval_env = wrap_env(
         env=gym.make(config.env_name),
         state_mean=dataset.state_mean,
         state_std=dataset.state_std,
         reward_scale=config.reward_scale,
+        goal_target=goal_target
     )
 
     # DT model & optimizer & scheduler setup
@@ -713,7 +746,7 @@ def train(config: TrainConfig):
     )
 
     # save config to the checkpoint
-    if config.checkpoints_path is not None:
+    if config.checkpoints_path is not None and not config.demo_mode:
         print(f"Checkpoints path: {config.checkpoints_path}")
         os.makedirs(config.checkpoints_path, exist_ok=True)
         with open(os.path.join(config.checkpoints_path, "config.yaml"), "w") as f:
@@ -783,13 +816,14 @@ def train(config: TrainConfig):
         # Backpropagation and optimization for main model
 
         optim.zero_grad()
-        if not step % config.eval_offline_every == 0:
-            combined_loss.backward()
+        if not config.demo_mode:
+            if not step % config.eval_offline_every == 0:
+                combined_loss.backward()
 
-        if config.clip_grad is not None:
-            torch.nn.utils.clip_grad_norm_(pdt_model.parameters(), config.clip_grad)
-        optim.step()
-        scheduler.step()
+            if config.clip_grad is not None:
+                torch.nn.utils.clip_grad_norm_(pdt_model.parameters(), config.clip_grad)
+            optim.step()
+            scheduler.step()
         #
         # # Log gradients
         # for name, param in pdt_model.named_parameters():
@@ -798,7 +832,7 @@ def train(config: TrainConfig):
 
         # print("train_loss", main_loss.item())
 
-        if step % config.eval_offline_every == 0:
+        if step % config.eval_offline_every == 0 and not config.demo_mode:
             if len(config.ant_path_viz_indices) >=2:
                 for batch_index in random.sample(range(config.batch_size), 10):
                     paths = []
@@ -834,14 +868,18 @@ def train(config: TrainConfig):
         )
 
         # validation in the env for the actual online performance
-        if step == 0: continue
-        if (step % config.eval_every == 0) or (
+        if step == 0 and not config.demo_mode: continue
+        if config.demo_mode or (step % config.eval_every == 0) or (
                 step % config.eval_path_plot_every == 0) or step == config.update_steps - 1:
             if step % config.eval_path_plot_every == 0 and step % config.eval_every != 0:
                 num_episodes = 1
             else:
                 num_episodes = config.eval_episodes
+
+            if config.demo_mode: num_episodes = 3
+
             pdt_model.eval()
+            video_folder = f'./visualisations/PDTv2-oracle-plan/{config.env_name}/{config.run_name}'
             for target_return in config.target_returns:
                 # if config.eval_seed != -1:
                 #     set_seed(config.eval_seed, eval_env, deterministic_torch=False)
@@ -850,7 +888,7 @@ def train(config: TrainConfig):
                 for ep_id in trange(num_episodes, desc="Evaluation", leave=False):
                     if config.eval_seed == -1:
                         set_seed(range(config.eval_episodes)[ep_id] * 2, eval_env, deterministic_torch=False)
-                    video_folder = f'./visualisations/PDTv2-oracle-plan/{config.env_name}/{config.run_name}'
+
                     os.makedirs(video_folder, exist_ok=True)
                     eval_return, eval_len, attention_frames, render_frames, plan_frames, plan_paths, ant_path, goal = eval_rollout(
                         pdt_model=pdt_model,
@@ -885,6 +923,7 @@ def train(config: TrainConfig):
                         ant_path_pos = ant_path[:, config.ant_path_viz_indices]
                         plan_paths = [dataset.convert_plan_to_path(path, config.plan_path_viz_indices)
                                       for path in plan_paths]
+                        print(goal, np.array(config.path_viz_indices))
                         plot_and_log_paths(
                             image_path=config.bg_image,
                             start=ant_path_pos[0],
@@ -920,9 +959,15 @@ def train(config: TrainConfig):
                         },
                         step=step,
                     )
+
             pdt_model.train()
 
-            if config.checkpoints_path is not None:
+            if config.demo_mode:
+                generate_demo_video(video_folder)
+                print("demo complete")
+                return
+
+            if config.checkpoints_path is not None and not config.demo_mode:
                 checkpoint = {
                     "pdt_model_state": pdt_model.state_dict(),
                     "state_mean": dataset.state_mean,
