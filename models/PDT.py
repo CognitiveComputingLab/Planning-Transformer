@@ -923,7 +923,7 @@ def train(config: TrainConfig):
                         ant_path_pos = ant_path[:, config.ant_path_viz_indices]
                         plan_paths = [dataset.convert_plan_to_path(path, config.plan_path_viz_indices)
                                       for path in plan_paths]
-                        print(goal, np.array(config.path_viz_indices))
+                        # print(goal, np.array(config.path_viz_indices))
                         plot_and_log_paths(
                             image_path=config.bg_image,
                             start=ant_path_pos[0],
