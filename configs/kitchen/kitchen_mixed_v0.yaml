@@ -33,14 +33,14 @@ weight_decay: 0.0001
 log_attn_weights: 1
 log_attn_every: 250
 record_video: 1
-run_name: "run_25"
+run_name: "video_test"
 eval_offline_every: 5000
 bg_image: "./bg_images/kitchen_bg.png"
 eval_path_plot_every: 2500
 num_plan_points: 10
 plan_bar_visualisation: false
 replanning_interval: 5 #80
-num_eval_videos: 0 # doesn't work for kitchen so don't bother
+num_eval_videos: 1 # doesn't work for kitchen so don't bother
 action_noise_scale: 0.0 # 0.4
 use_log_distance_plans: false # true
 plan_max_trajectory_ratio: 1.0 # 0.5

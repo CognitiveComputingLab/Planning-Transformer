@@ -20,6 +20,20 @@ Codebase for the Planning-Transformer advanced project.
 If using cuda run the following :
  1. pip3 uninstall torch & pip3 install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
 
+## Making Mujoco use GPU rendering
+Mujoco renders environments (in particular the kitchen environment) very slowly because it uses the CPU not GPU.
+Fortunately we can modify it to use GPU rendering, it's just a pain to do so. For this I'm assuming you're on WSL.
+
+Before installing mujoco run: 
+1. `conda env config vars set MUJOCO_GL=glfw PYOPENGL_PLATFORM=glfw` then `conda deactivate && conda activate planning-transformer`
+1. `sudo mkdir -p /usr/lib/nvidia-000` and then `export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/usr/lib/nvidia-000`
+2. `sudo apt-get install libglew-dev`
+3. `sudo chmod 666 /dev/dri/renderD128; sudo chmod 666 /dev/dri/card0`
+4. `sudo apt-get install libgl1-mesa-dri`
+5. `sudo apt-get install libnvidia-gl-440-server`
+
+See https://pytorch.org/rl/main/reference/generated/knowledge_base/MUJOCO_INSTALLATION.html for more help
+
 ## Usage instructions
 
 1. To test the Planning-Transformer on the AntMaze environment run: 

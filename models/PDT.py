@@ -17,12 +17,15 @@ if os.getcwd() not in sys.path:
 # concatenated
 
 import d4rl  # noqa
+from d4rl.kitchen import kitchen_envs
+
 from models.DT import *
 from models.utils import *
 from math import inf
 import re
 from pdt_scripts.generate_demo_videos import generate_demo_video
-
+import mujoco_py
+print(mujoco_py.cymj)
 
 @dataclass
 class TrainConfig:
@@ -588,7 +591,8 @@ def eval_rollout(
 
         if record_video:
             # env.render(mode='human')
-            render_frames.append(env.render(mode="rgb_array"))
+            render_frames.append(env.render(mode="human"))
+            print(step)
 
         # actions_noisy = actions + torch.randn(actions.shape, device=device) * action_noise_scale * 0.5
         # states_noisy = torch.zeros(size=states.shape,dtype=torch.float32, device=states.device )
@@ -868,7 +872,7 @@ def train(config: TrainConfig):
         )
 
         # validation in the env for the actual online performance
-        if step == 0 and not config.demo_mode: continue
+        # if step == 0 and not config.demo_mode: continue
         if config.demo_mode or (step % config.eval_every == 0) or (
                 step % config.eval_path_plot_every == 0) or step == config.update_steps - 1:
             if step % config.eval_path_plot_every == 0 and step % config.eval_every != 0:
