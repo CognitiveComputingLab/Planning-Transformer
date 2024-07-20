@@ -370,6 +370,9 @@ def simplify_path_to_target_points(path, target_num_points, tolerance_increment=
 def simplify_path_to_target_points_fast(path, num_points):
     return np.array(path)[np.linspace(0, len(path) - 1, num_points, dtype=int)]
 
+def simplify_path_to_target_points_log_time(path, num_points):
+    indices = np.logspace(0, np.log10(len(path)), num_points, dtype=int) - 1
+    return np.array(path)[np.unique(indices)]
 
 def simplify_path_to_target_points_by_distance(path, num_points):
     path = np.array(path)

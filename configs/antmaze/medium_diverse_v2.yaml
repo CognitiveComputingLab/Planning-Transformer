@@ -33,7 +33,7 @@ weight_decay: 0.0001
 log_attn_weights: 1
 log_attn_every: 250
 record_video: 1
-run_name: "run_228"
+run_name: "debug" # run_228
 eval_offline_every: 5000
 bg_image: "./bg_images/antmaze_medium_bg.png"
 eval_path_plot_every: 2500
@@ -42,7 +42,7 @@ plan_bar_visualisation: false
 replanning_interval: 10 #80
 num_eval_videos: 1
 action_noise_scale: 0.7 # 0.7
-plan_sampling_method: "log-distance" # one of "fixed-time", "fixed-distance", "log-time", "log-distance"
+plan_sampling_method:  4 # 1: fixed-time", 2: fixed-distance", 3: log-time", 4: log-distance
 plan_max_trajectory_ratio: 0.5 # 0.5
 state_noise_scale: 0.0 # 0.0
 plan_type: "split" #split
@@ -55,7 +55,7 @@ plans_use_actions: false
 non_plan_downweighting: 0 #-2
 use_goal_space_first_state_token: true
 use_timestep_embedding: false
-demo_mode: true
+demo_mode: false
 
 #checkpoint_to_load: PDT-oracle-antmaze-medium-diverse-v2-85532219 # run 226
 #checkpoint_step_to_load: 99999

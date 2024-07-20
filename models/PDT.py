@@ -21,6 +21,7 @@ from d4rl.kitchen import kitchen_envs
 
 from models.DT import *
 from models.utils import *
+from path_sampler import PathSampler
 from math import inf
 import re
 from pdt_scripts.generate_demo_videos import generate_demo_video
@@ -111,6 +112,9 @@ class TrainConfig:
     bg_image: str = None
     num_eval_videos: int = 3
 
+    # ablation testing parameters
+    plan_sampling_method: Optional[int] = 4  # log-distance
+
     # other
     checkpoint_to_load: Optional[str] = None
     checkpoint_step_to_load: Optional[int] = None
@@ -119,7 +123,7 @@ class TrainConfig:
     use_return_weighting: Optional[bool] = False
     eval_early_stop_step: Optional[int] = episode_len
     action_noise_scale: Optional[float] = 0.4
-    use_log_distance_plans: Optional[bool] = False
+
     plan_max_trajectory_ratio: Optional[int] = 0.5
     state_noise_scale: Optional[float] = 0.0
     use_two_phase_training: Optional[bool] = False
@@ -177,7 +181,7 @@ class TrainConfig:
 
 class SequenceManualPlanDataset(SequenceDataset):
     def __init__(self, env_name: str, seq_len: int = 10, reward_scale: float = 1.0, path_length=10,
-                 embedding_dim: int = 128, use_log_distance: bool = True, plan_max_trajectory_ratio=0.5,
+                 embedding_dim: int = 128, plan_sampling_method: int = 4, plan_max_trajectory_ratio=0.5,
                  plan_type: str = "combined", plan_indices: Tuple[int, ...] = (0, 1),
                  is_goal_conditioned: bool = False, plans_use_actions: bool = False):
         super().__init__(env_name, seq_len, reward_scale)
@@ -203,7 +207,7 @@ class SequenceManualPlanDataset(SequenceDataset):
             [traj['returns'][0] * p for traj, p in zip(self.dataset, self.sample_prob)]
         ).sum()
         self.max_traj_length = max(self.info["traj_lens"])
-        self.use_log_distance = use_log_distance
+        self.plan_sampler = PathSampler(method=plan_sampling_method)
         self.plan_max_trajectory_ratio = plan_max_trajectory_ratio
 
     @staticmethod
@@ -221,9 +225,7 @@ class SequenceManualPlanDataset(SequenceDataset):
             if actions is not None:
                 positions = np.hstack((positions, actions))
 
-            simplify_fn = simplify_path_to_target_points_by_distance_log_scale if self.use_log_distance else \
-                simplify_path_to_target_points_by_distance
-            path = np.array(simplify_fn(positions, self.path_length))
+            path = np.array(self.plan_sampler.sample(positions, self.path_length))
             if self.plan_type == "combined":
                 path = pad_along_axis(path[np.newaxis, :], pad_to=self.path_length, axis=1)
                 path = path.reshape(-1, self.plan_dim)
@@ -592,7 +594,7 @@ def eval_rollout(
         if record_video:
             # env.render(mode='human')
             render_frames.append(env.render(mode="human"))
-            print(step)
+            # print(step)
 
         # actions_noisy = actions + torch.randn(actions.shape, device=device) * action_noise_scale * 0.5
         # states_noisy = torch.zeros(size=states.shape,dtype=torch.float32, device=states.device )
@@ -683,7 +685,7 @@ def train(config: TrainConfig):
         reward_scale=config.reward_scale,
         path_length=config.num_plan_points,
         embedding_dim=config.embedding_dim,
-        use_log_distance=config.use_log_distance_plans,
+        plan_sampling_method=config.plan_sampling_method,
         plan_type=config.plan_type,
         is_goal_conditioned=config.is_goal_conditioned,
         plans_use_actions=config.plans_use_actions,
