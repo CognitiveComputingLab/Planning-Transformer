@@ -123,12 +123,13 @@ def arrays_to_video(timesteps_arrays, output_file, scale_factor=1.0, fps=30.0, u
     # Initialize VideoWriter with dynamic video size
     out = cv2.VideoWriter(output_file, cv2.VideoWriter_fourcc(*'MP4V'), fps, video_size)
 
-    for grid in grids:
+    for i, grid in enumerate(grids):
         # if the image has an alpha channel we'll remove it
         grid = grid[:, :, :3]
         # if we log arrays with shape 1 or 2 in the last dimension we need to add more channnels to bring it to 3
         grid = np.concatenate((grid, np.zeros(grid.shape[:2] + (3 - grid.shape[2],), dtype=np.uint8)), axis=2)
         frame = cv2.cvtColor(grid, cv2.COLOR_RGB2BGR)  # Convert color space
+
         if scale_factor != 1: frame = cv2.resize(frame, video_size, interpolation=cv2.INTER_NEAREST)
 
         # Calculate padding to center the frame in the video

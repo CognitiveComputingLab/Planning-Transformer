@@ -3,8 +3,8 @@ from enum import Enum
 
 class SamplingMethod(Enum):
     FIXED_TIME = 1
-    LOG_TIME = 2
-    FIXED_DISTANCE = 3
+    FIXED_DISTANCE = 2
+    LOG_TIME = 3
     LOG_DISTANCE = 4
 
 class PathSampler:

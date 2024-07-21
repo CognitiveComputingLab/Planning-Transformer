@@ -25,6 +25,11 @@ from path_sampler import PathSampler
 from math import inf
 import re
 from pdt_scripts.generate_demo_videos import generate_demo_video
+import copy
+
+from mujoco_py import GlfwContext
+GlfwContext(offscreen=True)  # Create a window to init GLFW.
+
 import mujoco_py
 print(mujoco_py.cymj)
 
@@ -514,14 +519,14 @@ def eval_rollout(
         target_return: float,
         plan_length: int,
         device: str = "gpu",
-        ep_id: int = 0,
+        ep_id: int = 3,
         plan_bar_visualisation: bool = False,
         replanning_interval: int = 40,
         record_video: bool = False,
         early_stop_step: int = inf,
         action_noise_scale: float = 0.7,
         state_noise_scale: float = 0.1,
-        num_eps_with_logged_attention: int = 3,
+        num_eps_with_logged_attention: int = 0,
         is_goal_conditioned: bool = False,
 ) -> Tuple[float, float, list, list, list, list, np.ndarray, tuple]:
     states = torch.zeros(1, pdt_model.episode_len + 1, pdt_model.state_dim, dtype=torch.float, device=device)
@@ -590,10 +595,9 @@ def eval_rollout(
                     pt_frame = log_tensor_as_image(plan_path.view(-1), f"plan_ep_{ep_id}",
                                                    log_to_wandb=False)
                     pt_frames.append(pt_frame)
-
         if record_video:
-            # env.render(mode='human')
-            render_frames.append(env.render(mode="human"))
+            frame = env.render(mode="rgb_array")
+            render_frames.append(frame)
             # print(step)
 
         # actions_noisy = actions + torch.randn(actions.shape, device=device) * action_noise_scale * 0.5

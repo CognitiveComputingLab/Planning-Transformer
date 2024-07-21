@@ -42,7 +42,7 @@ plan_bar_visualisation: false
 replanning_interval: 5 #80
 num_eval_videos: 1 # doesn't work for kitchen so don't bother
 action_noise_scale: 0.0 # 0.4
-plan_sampling_method: "fixed-distance" # one of "fixed-time", "fixed-distance", "log-time", "log-distance"
+plan_sampling_method: 2 # 1: fixed-time", 2: fixed-distance", 3: log-time", 4: log-distance
 plan_max_trajectory_ratio: 1.0 # 0.5
 state_noise_scale: 0.0 # 0.0
 plan_type: "split" #split
