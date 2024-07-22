@@ -53,8 +53,11 @@ plan_indices: [0,1]
 path_viz_indices: [0,1]
 plans_use_actions: false
 non_plan_downweighting: 0 #-2
-use_goal_space_first_state_token: true
 use_timestep_embedding: false
+plan_use_relative_states: true
+goal_representation: 3 # 1: Absolute Goal, 2: Relative goal, 3: State project to Goal and Absolute Goal
+plan_combine_observations: False
+plan_disabled: False
 
 checkpoint_to_load: "PDT-oracle-antmaze-large-diverse-v2-361c9fd9"
 checkpoint_step_to_load: 90000

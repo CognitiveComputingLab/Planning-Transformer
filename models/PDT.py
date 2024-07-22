@@ -17,21 +17,14 @@ if os.getcwd() not in sys.path:
 # concatenated
 
 import d4rl  # noqa
-from d4rl.kitchen import kitchen_envs
 
 from models.DT import *
 from models.utils import *
-from path_sampler import PathSampler
+from pdt_scripts.path_sampler import PathSampler
 from math import inf
 import re
 from pdt_scripts.generate_demo_videos import generate_demo_video
-import copy
 
-from mujoco_py import GlfwContext
-GlfwContext(offscreen=True)  # Create a window to init GLFW.
-
-import mujoco_py
-print(mujoco_py.cymj)
 
 @dataclass
 class TrainConfig:
@@ -103,9 +96,8 @@ class TrainConfig:
     # Options for planning tokens
     num_plan_points: int = 10
     plan_bar_visualisation: bool = False
-    replanning_interval: int = 40
-    plan_type: Optional[str] = "combined"
     plan_use_full_state: Optional[bool] = False
+    replanning_interval: int = 40
     plan_indices: Optional[Tuple[int, ...]] = None
     path_viz_indices: Optional[Tuple[int, ...]] = (0, 1)
     plans_use_actions: Optional[bool] = False
@@ -117,8 +109,20 @@ class TrainConfig:
     bg_image: str = None
     num_eval_videos: int = 3
 
-    # ablation testing parameters
+    # ablation testing parameters main
     plan_sampling_method: Optional[int] = 4  # log-distance
+    plan_use_relative_states: Optional[bool] = True  # States have first state subtracted
+    goal_representation: Optional[int] = 3  # goal-projected
+    plan_combine_observations: Optional[bool] = False  # Split observations into multiple tokens or combine
+    plan_disabled: Optional[bool] = False  # turn off the plan
+
+    # ablation testing parameters other
+    plan_max_trajectory_ratio: Optional[int] = 0.5
+    state_noise_scale: Optional[float] = 0.0
+    use_two_phase_training: Optional[bool] = False
+    is_goal_conditioned: Optional[bool] = False
+    goal_indices: Optional[Tuple[int, ...]] = (0, 1)
+    use_timestep_embedding: Optional[bool] = True
 
     # other
     checkpoint_to_load: Optional[str] = None
@@ -129,13 +133,6 @@ class TrainConfig:
     eval_early_stop_step: Optional[int] = episode_len
     action_noise_scale: Optional[float] = 0.4
 
-    plan_max_trajectory_ratio: Optional[int] = 0.5
-    state_noise_scale: Optional[float] = 0.0
-    use_two_phase_training: Optional[bool] = False
-    is_goal_conditioned: Optional[bool] = False
-    goal_indices: Optional[Tuple[int, ...]] = (0, 1)
-    use_goal_space_first_state_token: Optional[bool] = False
-    use_timestep_embedding: Optional[bool] = True
     demo_mode: Optional[bool] = False
 
     def __post_init__(self):
@@ -163,9 +160,6 @@ class TrainConfig:
         if self.checkpoints_path is not None:
             self.checkpoints_path = os.path.join(self.checkpoints_path, self.name)
 
-        if self.plan_type not in ['split', 'combined', 'none']:
-            raise ValueError(f"Invalid value for plan_type: {self.plan_type}")
-
         if self.plan_indices is not None:
             c = [self.plan_indices.index(b_elem) for b_elem in self.path_viz_indices if b_elem in self.plan_indices]
             if len(c) == len(self.path_viz_indices):
@@ -184,10 +178,11 @@ class TrainConfig:
             self.num_eval_videos = 3
             self.eval_early_stop_step = 500
 
+
 class SequenceManualPlanDataset(SequenceDataset):
     def __init__(self, env_name: str, seq_len: int = 10, reward_scale: float = 1.0, path_length=10,
                  embedding_dim: int = 128, plan_sampling_method: int = 4, plan_max_trajectory_ratio=0.5,
-                 plan_type: str = "combined", plan_indices: Tuple[int, ...] = (0, 1),
+                 plan_combine: bool = False, plan_disabled: bool = False, plan_indices: Tuple[int, ...] = (0, 1),
                  is_goal_conditioned: bool = False, plans_use_actions: bool = False):
         super().__init__(env_name, seq_len, reward_scale)
         self.path_length = path_length
@@ -195,13 +190,12 @@ class SequenceManualPlanDataset(SequenceDataset):
         self.plans_use_actions = plans_use_actions
 
         self.is_gc = is_goal_conditioned  # dataset depends on whether reward conditioned (rc) or goal conditioned (gc)
-        self.plan_length = self.path_length if plan_type == "split" else 1 if plan_type == "combined" else 0
+        self.plan_length = (1 if plan_combine else self.path_length) * (not plan_disabled)
         actions_shape = self.dataset[0]["actions"].shape[-1]
         self.path_dim = len(self.plan_indices) + (actions_shape if plans_use_actions else 0)
-        self.plan_dim = (1 if plan_type == "split" else self.path_length if plan_type == "combined" else 0) \
+        self.plan_dim = (self.path_length if plan_combine else 1) \
+                        * (not plan_disabled) \
                         * (self.path_dim + (not self.is_gc))
-        self.plan_type = plan_type
-
         self.embedding_dim = embedding_dim
         if self.is_gc:
             traj_dists = np.array([self.traj_distance(traj, plan_indices) for traj in self.dataset])
@@ -214,6 +208,8 @@ class SequenceManualPlanDataset(SequenceDataset):
         self.max_traj_length = max(self.info["traj_lens"])
         self.plan_sampler = PathSampler(method=plan_sampling_method)
         self.plan_max_trajectory_ratio = plan_max_trajectory_ratio
+
+        self.plan_combine = plan_combine
 
     @staticmethod
     def traj_distance(traj, indices):
@@ -231,7 +227,7 @@ class SequenceManualPlanDataset(SequenceDataset):
                 positions = np.hstack((positions, actions))
 
             path = np.array(self.plan_sampler.sample(positions, self.path_length))
-            if self.plan_type == "combined":
+            if self.plan_combine:
                 path = pad_along_axis(path[np.newaxis, :], pad_to=self.path_length, axis=1)
                 path = path.reshape(-1, self.plan_dim)
             else:
@@ -242,7 +238,7 @@ class SequenceManualPlanDataset(SequenceDataset):
         return path
 
     def convert_plan_to_path(self, plan, plan_path_viz_indices):
-        if self.plan_type == "combined":
+        if self.plan_combine:
             plan = plan[0].reshape(*plan[0].shape[:-1], -1, self.path_dim)
 
         return plan[:, plan_path_viz_indices]
@@ -344,8 +340,9 @@ class PlanningDecisionTransformer(DecisionTransformer):
                  goal_indices: Tuple[int, ...] = (0, 1),
                  plan_indices: Tuple[int, ...] = (0, 1),
                  non_plan_downweighting: float = 0.0,
-                 use_goal_space_first_state_token: bool = False,
                  use_timestep_embedding: bool = True,
+                 plan_use_relative_states: bool = True,
+                 goal_representation: int = 3,
                  **kwargs
                  ):
         super().__init__(state_dim, action_dim,
@@ -358,14 +355,15 @@ class PlanningDecisionTransformer(DecisionTransformer):
                          **kwargs
                          )
         self.goal_cond = len(goal_indices) > 0
-        self.gs_state = use_goal_space_first_state_token
+        self.goal_representation = goal_representation
         if not self.goal_cond:
-            self.gs_state = False
+            self.goal_representation = False
 
         self.blocks = nn.ModuleList(
             [
                 TransformerBlock(
-                    seq_len=3 * seq_len + plan_length + self.goal_cond + self.gs_state,  # Adjusted for the planning token and goal
+                    seq_len=3 * seq_len + plan_length + self.goal_cond + self.goal_representation,
+                    # Adjusted for the planning token and goal
                     embedding_dim=embedding_dim,
                     num_heads=num_heads,
                     attention_dropout=attention_dropout,
@@ -390,12 +388,18 @@ class PlanningDecisionTransformer(DecisionTransformer):
         # Create position IDs for plan once
         self.register_buffer('plan_position_ids', torch.arange(0, self.plan_length).unsqueeze(0))
         self.register_buffer('full_seq_pos_ids',
-                             torch.arange(0, 3 * seq_len + plan_length + self.goal_cond + self.gs_state).unsqueeze(0))
+                             torch.arange(0,
+                                          3 * seq_len + plan_length + self.goal_cond + self.goal_representation).unsqueeze(
+                                 0))
 
         # increase focus on plan by downweighting non plan tokens
         self.original_causal_masks = [block.causal_mask for block in self.blocks]
 
         self.apply(self._init_weights)
+
+        # ablation testing variables for plan/goal representation
+        self.plan_use_relative_states = plan_use_relative_states
+        self.goal_representation = goal_representation
 
     def downweight_non_plan(self, plan_start, plan_length, downweighting):
         for i, block in enumerate(self.blocks):
@@ -412,7 +416,6 @@ class PlanningDecisionTransformer(DecisionTransformer):
                 log_attention=False):
         batch_size, seq_len = states.shape[0], states.shape[1]
         device = states.device
-
         # [batch_size, seq_len, emb_dim]
         time_emb = self.timestep_emb(time_steps)
         state_emb_no_time_emb = self.state_emb(states)
@@ -427,8 +430,11 @@ class PlanningDecisionTransformer(DecisionTransformer):
             # make plan relative, accounting for the possibility of actions in plan
             # can also add pos_emb here if don't want the full sequence embedding
             if self.plan_length:
+                plan_states = plan[:, :, :len(self.plan_indices)]
+                if self.plan_use_relative_states:
+                    plan_states -= states[:, :1, self.plan_indices]
                 plan_emb = self.plan_emb(torch.cat((
-                    plan[:, :, :len(self.plan_indices)] - states[:, :1, self.plan_indices],
+                    plan_states,
                     plan[:, :, len(self.plan_indices):]
                 ), dim=-1)) + plan_pos_emb
             else:
@@ -445,14 +451,16 @@ class PlanningDecisionTransformer(DecisionTransformer):
             # goal_token = torch.zeros(state_emb.shape, dtype=torch.float32, device=goal.device)[:,:1]
             # goal_token[:,:1,:2]=goal[:, :1, self.goal_indices] - states[:, :1, self.goal_indices]
             if self.goal_cond:
-                if self.gs_state:
+                if self.goal_representation == 1:
+                    goal_token = self.goal_emb(goal[:, :1, self.goal_indices])
+                elif self.goal_representation == 2:
+                    goal_token = self.goal_emb(goal[:, :1, self.goal_indices] - states[:, :1, self.goal_indices])
+                else:
                     goal_token = self.goal_emb(
                         torch.cat((states[:, :1, self.goal_indices], goal[:, :1, self.goal_indices]), dim=1))
                     # goal_token = self.goal_emb(
                     #     torch.cat((goal[:, :1, self.goal_indices],
                     #                goal[:, :1, self.goal_indices] - states[:, :1, self.goal_indices]), dim=1))
-                else:
-                    goal_token = self.goal_emb(goal[:, :1, self.goal_indices] - states[:, :1, self.goal_indices])
             else:
                 goal_token = torch.empty(batch_size, 0, self.embedding_dim, device=device)
 
@@ -499,7 +507,7 @@ class PlanningDecisionTransformer(DecisionTransformer):
 
             out = self.out_norm(out)
 
-            start = 1 + self.goal_cond + self.gs_state
+            start = 1 + self.goal_cond + self.goal_representation == 3
             if training_phase == 0:
                 # for input to the planning_head we use the sequence shifted one to the left of the plan_sequence
                 plan = self.planning_head(out[:, start: start + self.plan_length])
@@ -550,7 +558,8 @@ def eval_rollout(
     goal = torch.tensor(goal_unmodified, dtype=torch.float32, device=device).unsqueeze(0).unsqueeze(0)
 
     if pdt_model.non_plan_downweighting < 0:
-        pdt_model.downweight_non_plan(3 + pdt_model.gs_state, pdt_model.plan_length, pdt_model.non_plan_downweighting)
+        pdt_model.downweight_non_plan(3 + pdt_model.goal_representation, pdt_model.plan_length,
+                                      pdt_model.non_plan_downweighting)
 
     for step in range(min(pdt_model.episode_len, early_stop_step)):
         # Generate the planning token every 20 steps (partial replanning)
@@ -668,7 +677,7 @@ def eval_rollout(
     #     pickle.dump(attention_map_all_raw, f)
 
     if pdt_model.non_plan_downweighting < 0:
-        pdt_model.downweight_non_plan(3 + pdt_model.gs_state, pdt_model.plan_length, 0.0)
+        pdt_model.downweight_non_plan(3 + pdt_model.goal_representation, pdt_model.plan_length, 0.0)
 
     ant_path = states[0, :int(episode_len + 1)].cpu().numpy()
     return episode_return, episode_len, attention_map_frames, render_frames, pt_frames, plan_paths, ant_path, \
@@ -690,7 +699,8 @@ def train(config: TrainConfig):
         path_length=config.num_plan_points,
         embedding_dim=config.embedding_dim,
         plan_sampling_method=config.plan_sampling_method,
-        plan_type=config.plan_type,
+        plan_combine=config.plan_combine_observations,
+        plan_disabled=config.plan_disabled,
         is_goal_conditioned=config.is_goal_conditioned,
         plans_use_actions=config.plans_use_actions,
         plan_indices=config.plan_indices
@@ -739,8 +749,9 @@ def train(config: TrainConfig):
         goal_indices=config.goal_indices,
         plan_indices=range(0, dataset.state_mean.shape[1]) if config.plan_indices is None else config.plan_indices,
         non_plan_downweighting=config.non_plan_downweighting,
-        use_goal_space_first_state_token=config.use_goal_space_first_state_token,
-        use_timestep_embedding=config.use_timestep_embedding
+        use_timestep_embedding=config.use_timestep_embedding,
+        plan_use_relative_states=config.plan_use_relative_states,
+        goal_representation=config.goal_representation
     ).to(config.device)
 
     optim = torch.optim.AdamW(
@@ -778,6 +789,7 @@ def train(config: TrainConfig):
     for step in trange(step_start, config.update_steps + step_start, desc="Training"):
         # print(f"step {step} in train loop")
         batch = next(trainloader_iter)
+
         # if step == step_start:
         #     first_batch = batch
         # if step % config.eval_offline_every == 0:
@@ -843,7 +855,7 @@ def train(config: TrainConfig):
         # print("train_loss", main_loss.item())
 
         if step % config.eval_offline_every == 0 and not config.demo_mode:
-            if len(config.ant_path_viz_indices) >=2:
+            if len(config.ant_path_viz_indices) >= 2:
                 for batch_index in random.sample(range(config.batch_size), 10):
                     paths = []
                     if dataset.plan_length:
@@ -859,7 +871,8 @@ def train(config: TrainConfig):
                         goal=goal[batch_index, 0].cpu()[
                             np.array(config.path_viz_indices)] if config.is_goal_conditioned else None,
                         plan_paths=paths,
-                        ant_path=states_till_end[batch_index, :steps_left[batch_index], config.ant_path_viz_indices].cpu(),
+                        ant_path=states_till_end[batch_index, :steps_left[batch_index],
+                                 config.ant_path_viz_indices].cpu(),
                         output_folder=f'./visualisations/PDTv2-oracle-plan/{config.env_name}/{config.run_name}/train',
                         index=f"step={step}-batch_idx={batch_index}",
                         log_to_wandb=False,
@@ -878,7 +891,7 @@ def train(config: TrainConfig):
         )
 
         # validation in the env for the actual online performance
-        # if step == 0 and not config.demo_mode: continue
+        if step == 0 and not config.demo_mode: continue
         if config.demo_mode or (step % config.eval_every == 0) or (
                 step % config.eval_path_plot_every == 0) or step == config.update_steps - 1:
             if step % config.eval_path_plot_every == 0 and step % config.eval_every != 0:
@@ -929,7 +942,7 @@ def train(config: TrainConfig):
                     eval_goal_dists.append(
                         np.linalg.norm(ant_path[-1, config.goal_indices] - np.array(goal)[list(config.goal_indices)])
                     )
-                    if len(config.ant_path_viz_indices) >=2:
+                    if len(config.ant_path_viz_indices) >= 2:
                         ant_path_pos = ant_path[:, config.ant_path_viz_indices]
                         plan_paths = [dataset.convert_plan_to_path(path, config.plan_path_viz_indices)
                                       for path in plan_paths]

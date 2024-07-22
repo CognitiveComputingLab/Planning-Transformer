@@ -46,3 +46,7 @@ use_return_weighting: 0
 eval_early_stop_step: 500
 #use_goal_relabelling: 1
 plan_sampling_method: 4 # 1: fixed-time", 2: fixed-distance", 3: log-time", 4: log-distance
+plan_use_relative_states: true
+goal_representation: 3 # 1: Absolute Goal, 2: Relative goal, 3: State project to Goal and Absolute Goal
+plan_combine_observations: False
+plan_disabled: False

@@ -33,19 +33,18 @@ weight_decay: 0.0001
 log_attn_weights: 1
 log_attn_every: 250
 record_video: 1
-run_name: "video_test"
+run_name: "debugging"
 eval_offline_every: 5000
 bg_image: "./bg_images/kitchen_bg.png"
 eval_path_plot_every: 2500
 num_plan_points: 10
 plan_bar_visualisation: false
 replanning_interval: 5 #80
-num_eval_videos: 1 # doesn't work for kitchen so don't bother
+num_eval_videos: 0 # doesn't work for kitchen so don't bother
 action_noise_scale: 0.0 # 0.4
-plan_sampling_method: 2 # 1: fixed-time", 2: fixed-distance", 3: log-time", 4: log-distance
 plan_max_trajectory_ratio: 1.0 # 0.5
 state_noise_scale: 0.0 # 0.0
-plan_type: "split" #split
+plan_disabled: False
 use_two_phase_training: false # false
 is_goal_conditioned: true # true
 goal_indices: [17,18,22,23, 24, 25, 26, 27, 28, 29]
@@ -53,5 +52,8 @@ goal_indices: [17,18,22,23, 24, 25, 26, 27, 28, 29]
 path_viz_indices: [23,24]
 plans_use_actions: True
 non_plan_downweighting: 0 #-2
-use_goal_space_first_state_token: true
 use_timestep_embedding: true
+plan_combine_observations: False
+plan_sampling_method: 3 # 1: fixed-time", 2: fixed-distance", 3: log-time", 4: log-distance
+plan_use_relative_states: true
+goal_representation: 3 # 1: Absolute Goal, 2: Relative goal, 3: State project to Goal and Absolute Goal
