@@ -40,7 +40,7 @@ eval_path_plot_every: 2500
 num_plan_points: 10
 plan_bar_visualisation: false
 replanning_interval: 5 #80
-num_eval_videos: 0 # doesn't work for kitchen so don't bother
+num_eval_videos: 1 # Video rendering can be slow for kitchen env
 action_noise_scale: 0.0 # 0.4
 plan_sampling_method: 2 # 1: fixed-time", 2: fixed-distance", 3: log-time", 4: log-distance
 plan_max_trajectory_ratio: 0.5 # 0.5

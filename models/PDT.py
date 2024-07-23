@@ -3,13 +3,13 @@ Modified version of the single file implementation of Decision transformer as pr
 """
 import warnings
 
-warnings.filterwarnings('ignore')
-warnings.filterwarnings('ignore', category=DeprecationWarning, module='numpy.*')
+# warnings.filterwarnings('ignore')
+# warnings.filterwarnings('ignore', category=DeprecationWarning, module='numpy.*')
 
 import os, sys
 
-os.environ['D4RL_SUPPRESS_IMPORT_ERROR'] = '1'
-os.environ["WANDB_SILENT"] = "true"
+# os.environ['D4RL_SUPPRESS_IMPORT_ERROR'] = '1'
+# os.environ["WANDB_SILENT"] = "true"
 if os.getcwd() not in sys.path:
     sys.path.append(os.getcwd())
 
@@ -24,6 +24,14 @@ from pdt_scripts.path_sampler import PathSampler
 from math import inf
 import re
 from pdt_scripts.generate_demo_videos import generate_demo_video
+
+from mujoco_py import GlfwContext
+
+GlfwContext(offscreen=True)  # Create a window to init GLFW.
+
+import mujoco_py
+
+print(mujoco_py.cymj)
 
 
 @dataclass
@@ -355,14 +363,12 @@ class PlanningDecisionTransformer(DecisionTransformer):
                          **kwargs
                          )
         self.goal_cond = len(goal_indices) > 0
-        self.goal_representation = goal_representation
-        if not self.goal_cond:
-            self.goal_representation = False
+        self.goal_length = 0 if not self.goal_cond else 2 if goal_representation == 3 else 1
 
         self.blocks = nn.ModuleList(
             [
                 TransformerBlock(
-                    seq_len=3 * seq_len + plan_length + self.goal_cond + self.goal_representation,
+                    seq_len=3 * seq_len + plan_length + self.goal_cond + self.goal_length,
                     # Adjusted for the planning token and goal
                     embedding_dim=embedding_dim,
                     num_heads=num_heads,
@@ -389,7 +395,7 @@ class PlanningDecisionTransformer(DecisionTransformer):
         self.register_buffer('plan_position_ids', torch.arange(0, self.plan_length).unsqueeze(0))
         self.register_buffer('full_seq_pos_ids',
                              torch.arange(0,
-                                          3 * seq_len + plan_length + self.goal_cond + self.goal_representation).unsqueeze(
+                                          3 * seq_len + plan_length + self.goal_cond + self.goal_length).unsqueeze(
                                  0))
 
         # increase focus on plan by downweighting non plan tokens
@@ -433,6 +439,7 @@ class PlanningDecisionTransformer(DecisionTransformer):
                 plan_states = plan[:, :, :len(self.plan_indices)]
                 if self.plan_use_relative_states:
                     plan_states -= states[:, :1, self.plan_indices]
+
                 plan_emb = self.plan_emb(torch.cat((
                     plan_states,
                     plan[:, :, len(self.plan_indices):]
@@ -507,7 +514,7 @@ class PlanningDecisionTransformer(DecisionTransformer):
 
             out = self.out_norm(out)
 
-            start = 1 + self.goal_cond + self.goal_representation == 3
+            start = 1 + self.goal_cond + (self.goal_representation == 3)
             if training_phase == 0:
                 # for input to the planning_head we use the sequence shifted one to the left of the plan_sequence
                 plan = self.planning_head(out[:, start: start + self.plan_length])
@@ -515,7 +522,6 @@ class PlanningDecisionTransformer(DecisionTransformer):
                 # predict actions only from the state embeddings
                 out_states = torch.cat([out[:, start:start + 1], out[:, (start + 3 + self.plan_length)::3]], dim=1)
                 out_actions = self.action_head(out_states) * self.max_action  # [batch_size, seq_len, action_dim]
-
         return plan, out_actions, attention_maps
 
 
@@ -711,6 +717,7 @@ def train(config: TrainConfig):
         batch_size=config.batch_size,
         pin_memory=True,
         num_workers=num_cores,
+        timeout=10  # Set a timeout to catch hanging issues
     )
     goal_target = None
     if config.demo_mode:
@@ -796,6 +803,7 @@ def train(config: TrainConfig):
         #     batch = first_batch
         goal, states, actions, returns, time_steps, mask, plan, states_till_end, steps_left, return_weight = \
             [b.to(config.device) for b in batch]
+
         # True value indicates that the corresponding key value will be ignored
         padding_mask = ~mask.to(torch.bool)
 
@@ -921,7 +929,7 @@ def train(config: TrainConfig):
                         device=config.device,
                         ep_id=ep_id,
                         plan_bar_visualisation=config.plan_bar_visualisation,
-                        record_video=config.record_video and ep_id < config.num_eval_videos,
+                        record_video=config.record_video and ep_id < config.num_eval_videos and step % config.eval_every == 0,
                         replanning_interval=config.replanning_interval,
                         early_stop_step=config.eval_early_stop_step,
                         action_noise_scale=config.action_noise_scale,

@@ -4,7 +4,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.widgets import Button, Slider
 import tqdm
-from models.utils import *
+from path_sampler import *
 import matplotlib as mpl
 from timeit import default_timer as timer
 
@@ -31,6 +31,7 @@ class PathSimplifierApp:
         self.ax_slider = plt.axes([0.1, 0.05, 0.5, 0.03], facecolor='lightgoldenrodyellow')
         self.slider = Slider(self.ax_slider, 'Num Points', 2, 100, valinit=5, valstep=1)
         self.slider.on_changed(self.update_simplification)
+        self.simplifier = PathSampler(SamplingMethod.LOG_TIME)
 
     def on_click(self, event):
         if event.inaxes != self.ax:
@@ -53,7 +54,7 @@ class PathSimplifierApp:
     def simplify_path(self, event):
         target_points = int(self.slider.val)
         path = list(zip(self.xs, self.ys))
-        simplified_path = list(simplify_path_to_target_points_by_distance_log_scale(path, target_points))
+        simplified_path = list(self.simplifier.sample(path, target_points))
         xs, ys = zip(*simplified_path) if simplified_path else ([], [])
 
         self.simplified_path.set_data(xs, ys)
@@ -79,14 +80,19 @@ def generate_random_path(num_points):
 
 
 def test_simplification():
+    simplifier = PathSampler(SamplingMethod.LOG_TIME)
     num_tests = 10  # Number of test cases
     for i in tqdm.tqdm(range(num_tests),desc="test cases"):
         # Generate a random path with at least 1000 points
         path = generate_random_path(random.randint(500,1000))
 
         # Test simplification from 2 to 100 target points
-        for target_points in range(5, 20):
-            simplified_path = simplify_path_to_target_points_by_distance_log_scale(path, target_points)
+        for target_points in range(1, len(path)//2):
+            simplified_path = simplifier.sample(path, target_points)
+
+            # Check if the simplified path has the correct length
+            assert len(
+                simplified_path) == target_points, f"Failed for target_points={target_points} with result length={len(simplified_path)}"
 
             # Check if the simplified path has the correct length
             assert len(
@@ -95,10 +101,7 @@ def test_simplification():
     print("All test cases passed successfully.")
 
 
-# Ensure the simplify_path_to_target_points function is defined as per the previous discussions.
 # Call the test function
-# path = generate_random_path(100)
-# new_path = simplify_path_to_target_points(path, 10,debug=1)
 # start = timer()
 # test_simplification()
 # end = timer()

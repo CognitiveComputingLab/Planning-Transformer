@@ -10,7 +10,6 @@ import torch
 import torchvision.utils as vutils
 from PIL import Image
 from scipy.spatial.transform import Rotation as R
-from shapely.geometry import LineString
 import time
 import re
 import wandb
@@ -314,90 +313,6 @@ def plot_and_log_paths_3d(image_path, start, goal, plan_paths, ant_path, orienta
         with open(os.path.join(output_folder, f"path_data_{index}.pkl"), 'wb') as f:
             pickle.dump({'start': start, 'goal': goal, 'plan_paths': plan_paths, 'ant_path': ant_path,
                          'orientation_path': orientation_path, 'mean': pos_mean, 'std': pos_std}, f)
-
-
-def adjust_path_points(simplified_points, target_points):
-    while len(simplified_points) < target_points:
-        # Find indices of the furthest consecutive points
-        furthest_idx = max(range(len(simplified_points) - 1),
-                           key=lambda i: np.linalg.norm(
-                               np.array(simplified_points[i]) - np.array(simplified_points[i + 1])))
-        # Insert a midpoint
-        midpoint = tuple(np.mean([simplified_points[furthest_idx], simplified_points[furthest_idx + 1]], axis=0))
-        simplified_points.insert(furthest_idx + 1, midpoint)
-
-    while len(simplified_points) > target_points:
-        # Find indices of the closest consecutive points
-        closest_idx = min(range(len(simplified_points) - 1),
-                          key=lambda i: np.linalg.norm(
-                              np.array(simplified_points[i]) - np.array(simplified_points[i + 1])))
-        # Remove one of the closest points
-        del simplified_points[closest_idx]
-
-
-def simplify_path_to_target_points(path, target_num_points, tolerance_increment=0.2, debug=False):
-    if len(path) < 2 or target_num_points >= len(path):
-        return path
-
-    # intial coarse simplify
-    # path = simplify_path_to_target_points_fast(path, target_num_points*5)
-    tolerance = 1
-
-    line = LineString(path)
-
-    simplified_line = line.simplify(tolerance)
-    simplified_points = list(simplified_line.coords)
-
-    while len(simplified_points) != target_num_points:
-        if debug: print(tolerance, len(simplified_points))
-        if len(simplified_points) > target_num_points:
-            tolerance += tolerance_increment
-        else:
-            tolerance -= tolerance_increment
-            tolerance_increment /= 2
-
-        simplified_line = line.simplify(tolerance)
-        simplified_points = list(simplified_line.coords)
-
-        if tolerance <= 0 or tolerance_increment < 1e-5:
-            break
-
-    # Directly adjust the number of points to match the target
-    adjust_path_points(simplified_points, target_num_points)
-
-    return simplified_points
-
-
-def simplify_path_to_target_points_fast(path, num_points):
-    return np.array(path)[np.linspace(0, len(path) - 1, num_points, dtype=int)]
-
-def simplify_path_to_target_points_log_time(path, num_points):
-    indices = np.logspace(0, np.log10(len(path)), num_points, dtype=int) - 1
-    return np.array(path)[np.unique(indices)]
-
-def simplify_path_to_target_points_by_distance(path, num_points):
-    path = np.array(path)
-    dists = np.linalg.norm(np.diff(path, axis=0), axis=1)
-    cum_dists = np.insert(np.cumsum(dists), 0, 0)
-    target_dists = np.linspace(0, cum_dists[-1], num_points)
-    target_indices = np.searchsorted(cum_dists, target_dists, side='right') - 1
-    target_indices[0], target_indices[-1] = 0, len(path) - 1  # Ensure first and last points are included
-    return path[target_indices]
-
-
-def simplify_path_to_target_points_by_distance_log_scale(path, num_points):
-    path = np.array(path)
-    dists = np.linalg.norm(np.diff(path, axis=0), axis=1)
-    cum_dists = np.insert(np.cumsum(dists), 0, 0)
-
-    # Generate logarithmic scale and scale it to fit the range of cum_dists
-    log_scale = np.logspace(0, 1, num_points, base=10) - 1
-    max_log = log_scale[-1]  # The last value in log_scale represents the 'maximum' before scaling
-    scaled_log_dists = log_scale / max_log * cum_dists[-1]
-
-    target_indices = np.searchsorted(cum_dists, scaled_log_dists, side='right') - 1
-    return path[target_indices]
-
 
 def demo_goal_select(image_path, pos_mean, pos_std):
     fig, ax = prepare_plot(image_path, pos_mean, pos_std)

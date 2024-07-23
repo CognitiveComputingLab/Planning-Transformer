@@ -55,7 +55,7 @@ is_goal_conditioned: false # true
 plans_use_actions: false
 non_plan_downweighting: 0 #-2
 use_timestep_embedding: true
-plan_use_relative_states: true
+plan_use_relative_states: True
 goal_representation: 3 # 1: Absolute Goal, 2: Relative goal, 3: State project to Goal and Absolute Goal
 
 #checkpoint_to_load: PDT-oracle-halfcheetah-medium-v2-7c0083b7 #plan actions

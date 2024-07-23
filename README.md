@@ -19,32 +19,37 @@ Codebase for the Planning-Transformer advanced project.
 
 If using cuda run the following :
  1. pip3 uninstall torch & pip3 install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
-## make mujoco use llvmpip
+
+## Faster Mujoco Render
+### GPU rendering
+
+Unfortunately this doesn't work on WSL2 but it should work on Linux
+
+To learn how to set it up to it properly go here:
+https://pytorch.org/rl/main/reference/generated/knowledge_base/MUJOCO_INSTALLATION.html for more help
+
+There is a bug which prevents Mujoco building the gpu environment by default, which you can fix with:
+https://github.com/openai/mujoco-py/issues/493
+
+## Faster software rendering with LLVMpipe
+add this to batch file
+
+```
 export MUJOCO_PY_FORCE_CPU=1
 export LIBGL_ALWAYS_SOFTWARE=1
+```
 
-## Making Mujoco use GPU rendering
-Mujoco renders environments (in particular the kitchen environment) very slowly because it uses the CPU not GPU.
-Fortunately we can modify it to use GPU rendering, it's just a pain to do so. For this I'm assuming you're on WSL.
+I found this to be much faster than GPU rendering for some reason.
 
-Before installing mujoco run:
-1. `sudo mkdir -p /usr/lib/nvidia-000` and then `export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/usr/lib/nvidia-000`
-1. `sudo chmod 666 /dev/dri/renderD128; sudo chmod 666 /dev/dri/card0`
+### Fixing kitchen env so it renders
 
-See https://pytorch.org/rl/main/reference/generated/knowledge_base/MUJOCO_INSTALLATION.html for more help
-Also see https://devblogs.microsoft.com/commandline/d3d12-gpu-video-acceleration-in-the-windows-subsystem-for-linux-now-available/
-## Making sure opengl can find nvidia-000 without exporting to library-path
-1. `conda info --envs`
-2. `cd $(conda info --base)/envs/your_env_name`
-3. `mkdir -p etc/conda/activate.d`
-4. `echo -e '#!/bin/sh\nexport LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/usr/lib/nvidia-000' > etc/conda/activate.d/env_vars.sh`
-5. `mkdir -p etc/conda/deactivate.d`
-6. `echo -e '#!/bin/sh\nexport LD_LIBRARY_PATH=$(echo $LD_LIBRARY_PATH | sed "s|:/usr/lib/nvidia-000||")' > etc/conda/deactivate.d/env_vars.sh`
+Kitchen env needs to be manually edited to make it render.
+1. In "site-packages\d4rl\kitchen\kitchen_envs.py", comment out the render function (lines #89-91) , so that it actually renders video.
+2. Then in "site-packages\d4rl\kitchen\adept_envs\franka\kitchen_multitask_v0.py" comment out line #114, so it doesn't double render.
 
 ## Usage instructions
 
 1. To test the Planning-Transformer on the AntMaze environment run: 
    1. (if using cpu) `python3 models/PDT.py --config configs/umaze_v2.yaml`
    3. (if using cuda) `python3 models/PDT.py --config configs/umaze_v2_cuda.yaml`
-2. You will be asked by wandb to create a W&B account or to use an existing W&B account, following their instructions to link the run to your account. 
-
+2. You will be asked by wandb to create a W&B account or to use an existing W&B account, following their instructions to link the run to your account.
