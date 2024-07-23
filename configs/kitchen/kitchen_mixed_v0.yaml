@@ -27,7 +27,7 @@ reward_scale: 1.0
 seq_len: 10
 target_returns: [4.0]
 train_seed: 16 #10
-update_steps: 100000
+update_steps: 200000
 warmup_steps: 10000
 weight_decay: 0.0001
 log_attn_weights: 1
