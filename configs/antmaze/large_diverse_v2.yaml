@@ -58,8 +58,8 @@ use_timestep_embedding: false
 plan_use_relative_states: true
 goal_representation: 3 # 1: Absolute Goal, 2: Relative goal, 3: State project to Goal and Absolute Goal
 
-checkpoint_to_load: "PDT-oracle-antmaze-large-diverse-v2-361c9fd9"
-checkpoint_step_to_load: 90000
+#checkpoint_to_load: "PDT-oracle-antmaze-large-diverse-v2-361c9fd9"
+#checkpoint_step_to_load: 90000
 
 #checkpoint_to_load: "PDT-oracle-antmaze-large-diverse-v2-54bbde96" # Run 9
 #checkpoint_step_to_load: 95000

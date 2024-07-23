@@ -14,9 +14,9 @@ parameters = {
 }
 
 config_files = [
-    "configs/kitchen/kitchen_mixed_v0.yaml",
+    # "configs/kitchen/kitchen_mixed_v0.yaml",
     "configs/antmaze/large_diverse_v2.yaml",
-    "configs/gym_mujoco/halfcheetah_medium_replay_v2.yaml"
+    # "configs/gym_mujoco/halfcheetah_medium_replay_v2.yaml"
 ]
 
 def find_project_root() -> str:

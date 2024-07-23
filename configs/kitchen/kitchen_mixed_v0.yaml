@@ -33,7 +33,7 @@ weight_decay: 0.0001
 log_attn_weights: 1
 log_attn_every: 250
 record_video: 1
-run_name: "debugging"
+run_name: "best_params_test"
 eval_offline_every: 5000
 bg_image: "./bg_images/kitchen_bg.png"
 eval_path_plot_every: 2500

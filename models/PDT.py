@@ -118,9 +118,9 @@ class TrainConfig:
     num_eval_videos: int = 3
 
     # ablation testing parameters main
-    plan_sampling_method: Optional[int] = 4  # log-distance
+    plan_sampling_method: Optional[int] = 4  # 1: fixed-time", 2: fixed-distance", 3: log-time", 4: log-distance
     plan_use_relative_states: Optional[bool] = True  # States have first state subtracted
-    goal_representation: Optional[int] = 3  # goal-projected
+    goal_representation: Optional[int] = 3  # 1: Absolute Goal, 2: Relative goal, 3: State project to Goal and Absolute Goal
     plan_combine_observations: Optional[bool] = False  # Split observations into multiple tokens or combine
     plan_disabled: Optional[bool] = False  # turn off the plan
 
