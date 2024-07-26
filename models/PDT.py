@@ -125,7 +125,7 @@ class TrainConfig:
     plan_disabled: Optional[bool] = False  # turn off the plan
 
     # ablation testing parameters other
-    plan_max_trajectory_ratio: Optional[int] = 0.5
+    plan_max_trajectory_ratio: Optional[float] = 0.5
     state_noise_scale: Optional[float] = 0.0
     use_two_phase_training: Optional[bool] = False
     is_goal_conditioned: Optional[bool] = False
@@ -368,7 +368,7 @@ class PlanningDecisionTransformer(DecisionTransformer):
         self.blocks = nn.ModuleList(
             [
                 TransformerBlock(
-                    seq_len=3 * seq_len + plan_length + self.goal_cond + self.goal_length,
+                    seq_len=3 * seq_len + plan_length + self.goal_length,
                     # Adjusted for the planning token and goal
                     embedding_dim=embedding_dim,
                     num_heads=num_heads,
@@ -395,7 +395,7 @@ class PlanningDecisionTransformer(DecisionTransformer):
         self.register_buffer('plan_position_ids', torch.arange(0, self.plan_length).unsqueeze(0))
         self.register_buffer('full_seq_pos_ids',
                              torch.arange(0,
-                                          3 * seq_len + plan_length + self.goal_cond + self.goal_length).unsqueeze(
+                                          3 * seq_len + plan_length + self.goal_length).unsqueeze(
                                  0))
 
         # increase focus on plan by downweighting non plan tokens
@@ -436,7 +436,7 @@ class PlanningDecisionTransformer(DecisionTransformer):
             # make plan relative, accounting for the possibility of actions in plan
             # can also add pos_emb here if don't want the full sequence embedding
             if self.plan_length:
-                plan_states = plan[:, :, :len(self.plan_indices)]
+                plan_states = plan[:, :, :len(self.plan_indices)].clone()
                 if self.plan_use_relative_states:
                     plan_states -= states[:, :1, self.plan_indices]
 
@@ -444,6 +444,7 @@ class PlanningDecisionTransformer(DecisionTransformer):
                     plan_states,
                     plan[:, :, len(self.plan_indices):]
                 ), dim=-1)) + plan_pos_emb
+
             else:
                 plan_emb = torch.empty(batch_size, 0, self.embedding_dim, device=device)
             # plan_emb = self.plan_emb(plan) + plan_pos_emb if self.plan_length else \
@@ -459,15 +460,21 @@ class PlanningDecisionTransformer(DecisionTransformer):
             # goal_token[:,:1,:2]=goal[:, :1, self.goal_indices] - states[:, :1, self.goal_indices]
             if self.goal_cond:
                 if self.goal_representation == 1:
+                    # absolute goal
                     goal_token = self.goal_emb(goal[:, :1, self.goal_indices])
                 elif self.goal_representation == 2:
+                    # relative goal
                     goal_token = self.goal_emb(goal[:, :1, self.goal_indices] - states[:, :1, self.goal_indices])
-                else:
+                elif self.goal_representation == 3:
+                    # goal space state + absolute goal
                     goal_token = self.goal_emb(
-                        torch.cat((states[:, :1, self.goal_indices], goal[:, :1, self.goal_indices]), dim=1))
-                    # goal_token = self.goal_emb(
-                    #     torch.cat((goal[:, :1, self.goal_indices],
-                    #                goal[:, :1, self.goal_indices] - states[:, :1, self.goal_indices]), dim=1))
+                        torch.cat((states[:, :1, self.goal_indices],
+                                   goal[:, :1, self.goal_indices]), dim=1))
+                else:
+                    # goal space state + relative goal
+                    goal_token = self.goal_emb(
+                        torch.cat((states[:, :1, self.goal_indices],
+                                   goal[:, :1, self.goal_indices] - states[:, :1, self.goal_indices]), dim=1))
             else:
                 goal_token = torch.empty(batch_size, 0, self.embedding_dim, device=device)
 
@@ -514,7 +521,7 @@ class PlanningDecisionTransformer(DecisionTransformer):
 
             out = self.out_norm(out)
 
-            start = 1 + self.goal_cond + (self.goal_representation == 3)
+            start = 1 + self.goal_length
             if training_phase == 0:
                 # for input to the planning_head we use the sequence shifted one to the left of the plan_sequence
                 plan = self.planning_head(out[:, start: start + self.plan_length])
@@ -560,11 +567,11 @@ def eval_rollout(
     pt_frames = []
     plan = None
     plan_paths = []
-    goal_unmodified = env.target_goal
+    goal_unmodified = env.get_target_goal(obs=states[0,0].cpu())
     goal = torch.tensor(goal_unmodified, dtype=torch.float32, device=device).unsqueeze(0).unsqueeze(0)
 
     if pdt_model.non_plan_downweighting < 0:
-        pdt_model.downweight_non_plan(3 + pdt_model.goal_representation, pdt_model.plan_length,
+        pdt_model.downweight_non_plan(2 + pdt_model.goal_length, pdt_model.plan_length,
                                       pdt_model.non_plan_downweighting)
 
     for step in range(min(pdt_model.episode_len, early_stop_step)):

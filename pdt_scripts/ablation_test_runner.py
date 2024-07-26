@@ -9,14 +9,16 @@ import sys
 parameters = {
     "plan_sampling_method": [1, 2, 3, 4],
     "plan_use_relative_states": [True, False],
-    "goal_representation": [1, 2, 3],
+    "goal_representation": [1, 2, 3, 4],
     "plan_combine_observations": [True, False],
+    "use_timestep_embedding": [True, False],
+    "plan_max_trajectory_ratio": [0.5, 1.0]
 }
 
 config_files = [
     # "configs/kitchen/kitchen_mixed_v0.yaml",
-    "configs/antmaze/large_diverse_v2.yaml",
-    # "configs/gym_mujoco/halfcheetah_medium_replay_v2.yaml"
+    # "configs/antmaze/large_diverse_v2.yaml",
+    "configs/gym_mujoco/halfcheetah_medium_replay_v2.yaml"
 ]
 
 def find_project_root() -> str:
@@ -54,8 +56,8 @@ def modify_and_run(config: Dict[str, Any], param: str, value: Any, idx: int, pro
     os.remove(temp_config_path)
 
 def run_ablation_tests(config_files: List[str], parameters: Dict[str, List[Any]], project_root: str):
-    idx = 0
     for config_file in config_files:
+        idx = 0
         full_config_path = os.path.join(project_root, config_file)
         print(f"Running ablation tests for config: {full_config_path}")
         config = load_config(full_config_path)

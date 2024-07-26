@@ -147,8 +147,7 @@ class MakeGoalEnv(gym.Wrapper):
         self.state_std = state_std
         self.goal_target = goal_target
 
-    @property
-    def target_goal(self):
+    def get_target_goal(self, obs=None):
         if self.goal_target is not None:
             return self.goal_target
 
@@ -160,7 +159,7 @@ class MakeGoalEnv(gym.Wrapper):
             # return [0, 0]
             return normalize_state(self.env.target_goal, self.state_mean[0, :2], self.state_std[0, :2])
         if "kitchen" in env_id:
-            goal = np.zeros(self.state_mean[0].shape)
+            goal = np.zeros(self.state_mean[0].shape) if obs is None else np.array(obs)
             for task in self.env.TASK_ELEMENTS:
                 subtask_indices = kitchen_envs.OBS_ELEMENT_INDICES[task]
                 subtask_goals = kitchen_envs.OBS_ELEMENT_GOALS[task]
