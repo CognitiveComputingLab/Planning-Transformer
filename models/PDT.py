@@ -231,7 +231,7 @@ def wrap_goal_env(
     env = MakeGoalEnv(env, normalize_state, state_mean, state_std, goal_target)
     return env
 
-class SequenceManualPlanDataset(SequenceDataset):
+class SequencePlanDataset(SequenceDataset):
     def __init__(self, env_name: str, seq_len: int = 10, reward_scale: float = 1.0, path_length=10,
                  embedding_dim: int = 128, plan_sampling_method: int = 4, plan_max_trajectory_ratio=0.5,
                  plan_combine: bool = False, plan_disabled: bool = False, plan_indices: Tuple[int, ...] = (0, 1),
@@ -749,7 +749,7 @@ def train(config: TrainConfig):
     wandb_init(asdict(config))
 
     # data & dataloader setup
-    dataset = SequenceManualPlanDataset(
+    dataset = SequencePlanDataset(
         config.env_name,
         seq_len=config.seq_len,
         reward_scale=config.reward_scale,

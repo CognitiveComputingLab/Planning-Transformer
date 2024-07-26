@@ -176,9 +176,10 @@ def discounted_cumsum(x: np.ndarray, gamma: float) -> np.ndarray:
 
 
 def load_d4rl_trajectories(
-        env_name: str, gamma: float = 1.0
+        env_name: str, dataset: dict = None, gamma: float = 1.0
 ) -> Tuple[List[DefaultDict[str, np.ndarray]], Dict[str, Any]]:
-    dataset = gym.make(env_name).get_dataset()
+    if dataset is None:
+        dataset = gym.make(env_name).get_dataset()
     traj, traj_len = [], []
 
     data_ = defaultdict(list)
@@ -210,8 +211,8 @@ def load_d4rl_trajectories(
 
 
 class SequenceDataset(IterableDataset):
-    def __init__(self, env_name: str, seq_len: int = 10, reward_scale: float = 1.0):
-        self.dataset, self.info = load_d4rl_trajectories(env_name, gamma=1.0)
+    def __init__(self, env_name: str, d4rl_dataset=None, seq_len: int = 10, reward_scale: float = 1.0):
+        self.dataset, self.info = load_d4rl_trajectories(env_name, d4rl_dataset, gamma=1.0)
         self.reward_scale = reward_scale
         self.seq_len = seq_len
 

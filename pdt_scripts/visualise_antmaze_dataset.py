@@ -13,7 +13,7 @@ import os
 
 def main(output_directory):
     env_name = "antmaze-medium-diverse-v2"
-    ds = PDT.SequenceManualPlanDataset(env_name)
+    ds = PDT.SequencePlanDataset(env_name)
 
     # rewards_weighted = 0
     # for traj, p in zip(ds.dataset, ds.sample_prob):
