@@ -137,49 +137,21 @@ def normalize_state(state, state_mean, state_std):
 def scale_reward(reward, reward_scale):
     return reward_scale * reward
 
-
-class MakeGoalEnv(gym.Wrapper):
-    def __init__(self, env, normalize, state_mean, state_std, goal_target=None):
-        super().__init__(env)
-        assert callable(normalize)
-        self.normalize = normalize
-        self.state_mean = state_mean
-        self.state_std = state_std
-        self.goal_target = goal_target
-
-    def get_target_goal(self, obs=None):
-        if self.goal_target is not None:
-            return self.goal_target
-
-        env_id = self.env.spec.id
-        if "antmaze" in env_id:
-            # print(env.target_goal)
-            # return [-1.1, -1.1]
-            # return [-1.8, -2.3]
-            # return [0, 0]
-            return normalize_state(self.env.target_goal, self.state_mean[0, :2], self.state_std[0, :2])
-        if "kitchen" in env_id:
-            goal = np.zeros(self.state_mean[0].shape) if obs is None else np.array(obs)
-            for task in self.env.TASK_ELEMENTS:
-                subtask_indices = kitchen_envs.OBS_ELEMENT_INDICES[task]
-                subtask_goals = kitchen_envs.OBS_ELEMENT_GOALS[task]
-                goal[subtask_indices] = subtask_goals
-            return normalize_state(goal, self.state_mean[0], self.state_std[0])
-        else:
-            return np.zeros((1, 1), dtype=np.float32)
-            # raise ValueError("Expected antmaze or kitchen env, found ", env_id)
-
 def wrap_env(
-        env: gym.Env,
-        state_mean: Union[np.ndarray, float] = 0.0,
-        state_std: Union[np.ndarray, float] = 1.0,
-        reward_scale: float = 1.0,
-        goal_target: list = None,
+    env: gym.Env,
+    state_mean: Union[np.ndarray, float] = 0.0,
+    state_std: Union[np.ndarray, float] = 1.0,
+    reward_scale: float = 1.0,
 ) -> gym.Env:
-    env = gym.wrappers.TransformObservation(env, partial(normalize_state, state_mean=state_mean, state_std=state_std))
+    def normalize_state(state):
+        return (state - state_mean) / state_std
+
+    def scale_reward(reward):
+        return reward_scale * reward
+
+    env = gym.wrappers.TransformObservation(env, normalize_state)
     if reward_scale != 1.0:
-        env = gym.wrappers.TransformReward(env, partial(scale_reward, reward_scale=reward_scale))
-    env = MakeGoalEnv(env, normalize_state, state_mean, state_std, goal_target)
+        env = gym.wrappers.TransformReward(env, scale_reward)
     return env
 
 # some utils functionalities specific for Decision Transformer

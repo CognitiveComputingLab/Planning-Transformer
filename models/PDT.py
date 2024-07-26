@@ -186,6 +186,50 @@ class TrainConfig:
             self.num_eval_videos = 3
             self.eval_early_stop_step = 500
 
+class MakeGoalEnv(gym.Wrapper):
+    def __init__(self, env, normalize, state_mean, state_std, goal_target=None):
+        super().__init__(env)
+        assert callable(normalize)
+        self.normalize = normalize
+        self.state_mean = state_mean
+        self.state_std = state_std
+        self.goal_target = goal_target
+
+    @property
+    def target_goal(self):
+        if self.goal_target is not None:
+            return self.goal_target
+
+        env_id = self.env.spec.id
+        if "antmaze" in env_id:
+            # print(env.target_goal)
+            # return [-1.1, -1.1]
+            # return [-1.8, -2.3]
+            # return [0, 0]
+            return normalize_state(self.env.target_goal, self.state_mean[0, :2], self.state_std[0, :2])
+        if "kitchen" in env_id:
+            goal = self._get_obs()
+            for task in self.env.TASK_ELEMENTS:
+                subtask_indices = kitchen_envs.OBS_ELEMENT_INDICES[task]
+                subtask_goals = kitchen_envs.OBS_ELEMENT_GOALS[task]
+                goal[subtask_indices] = subtask_goals
+            return normalize_state(goal, self.state_mean[0], self.state_std[0])
+        else:
+            return np.zeros((1, 1), dtype=np.float32)
+            # raise ValueError("Expected antmaze or kitchen env, found ", env_id)
+
+def wrap_goal_env(
+        env: gym.Env,
+        state_mean: Union[np.ndarray, float] = 0.0,
+        state_std: Union[np.ndarray, float] = 1.0,
+        reward_scale: float = 1.0,
+        goal_target: list = None,
+) -> gym.Env:
+    env = gym.wrappers.TransformObservation(env, partial(normalize_state, state_mean=state_mean, state_std=state_std))
+    if reward_scale != 1.0:
+        env = gym.wrappers.TransformReward(env, partial(scale_reward, reward_scale=reward_scale))
+    env = MakeGoalEnv(env, normalize_state, state_mean, state_std, goal_target)
+    return env
 
 class SequenceManualPlanDataset(SequenceDataset):
     def __init__(self, env_name: str, seq_len: int = 10, reward_scale: float = 1.0, path_length=10,
@@ -536,7 +580,7 @@ class PlanningDecisionTransformer(DecisionTransformer):
 @torch.no_grad()
 def eval_rollout(
         pdt_model: PlanningDecisionTransformer,
-        env: gym.Env,
+        env: MakeGoalEnv,
         target_return: float,
         plan_length: int,
         device: str = "gpu",
@@ -567,7 +611,7 @@ def eval_rollout(
     pt_frames = []
     plan = None
     plan_paths = []
-    goal_unmodified = env.get_target_goal(obs=states[0,0].cpu())
+    goal_unmodified = env.target_goal
     goal = torch.tensor(goal_unmodified, dtype=torch.float32, device=device).unsqueeze(0).unsqueeze(0)
 
     if pdt_model.non_plan_downweighting < 0:
@@ -734,7 +778,7 @@ def train(config: TrainConfig):
             pos_std=dataset.state_std[0, config.ant_path_viz_indices],
         ))
     # evaluation environment with state & reward preprocessing (as in dataset above)
-    eval_env = wrap_env(
+    eval_env = wrap_goal_env(
         env=gym.make(config.env_name),
         state_mean=dataset.state_mean,
         state_std=dataset.state_std,
