@@ -1,5 +1,5 @@
 import argparse
-from models.utils import plot_and_log_paths, plot_and_log_paths_3d
+from utils.plotting_funcs import plot_and_log_paths
 import os, sys
 import re
 import pickle

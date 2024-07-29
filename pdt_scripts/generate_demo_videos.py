@@ -4,10 +4,8 @@ import os
 import pickle
 from pdt_scripts import overlay_attention
 from tqdm import tqdm
-from models.utils import plot_and_log_paths
-from PIL import Image
+from utils.plotting_funcs import plot_and_log_paths
 import re
-import matplotlib
 import numpy as np
 
 def stack_images(img1, img2, output_path=None):

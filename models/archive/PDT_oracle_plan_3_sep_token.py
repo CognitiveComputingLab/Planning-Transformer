@@ -19,7 +19,7 @@ if os.getcwd() not in sys.path:
 
 import d4rl  # noqa
 from models.DT import *
-from models.utils import *
+from common.plotting_funcs import *
 
 
 @dataclass

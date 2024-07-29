@@ -7,10 +7,10 @@ import random
 import uuid
 from collections import defaultdict
 from dataclasses import asdict, dataclass
-from functools import partial
 from typing import Any, DefaultDict, Dict, List, Optional, Tuple, Union
 
 import d4rl  # noqa
+from d4rl.offline_env import OfflineEnv
 import gym
 import numpy as np
 import pyrallis
@@ -21,9 +21,7 @@ from torch.utils.data import DataLoader, IterableDataset
 from tqdm.auto import trange
 
 import wandb
-from models.utils import log_attention_maps
-
-from d4rl.kitchen import kitchen_envs
+from utils.plotting_funcs import log_attention_maps
 
 
 @dataclass
@@ -176,10 +174,9 @@ def discounted_cumsum(x: np.ndarray, gamma: float) -> np.ndarray:
 
 
 def load_d4rl_trajectories(
-        env_name: str, dataset: dict = None, gamma: float = 1.0
+        env: OfflineEnv, gamma: float = 1.0
 ) -> Tuple[List[DefaultDict[str, np.ndarray]], Dict[str, Any]]:
-    if dataset is None:
-        dataset = gym.make(env_name).get_dataset()
+    dataset = env.get_dataset()
     traj, traj_len = [], []
 
     data_ = defaultdict(list)
@@ -211,8 +208,8 @@ def load_d4rl_trajectories(
 
 
 class SequenceDataset(IterableDataset):
-    def __init__(self, env_name: str, d4rl_dataset=None, seq_len: int = 10, reward_scale: float = 1.0):
-        self.dataset, self.info = load_d4rl_trajectories(env_name, d4rl_dataset, gamma=1.0)
+    def __init__(self, env: OfflineEnv, seq_len: int = 10, reward_scale: float = 1.0):
+        self.dataset, self.info = load_d4rl_trajectories(env, gamma=1.0)
         self.reward_scale = reward_scale
         self.seq_len = seq_len
 
@@ -467,9 +464,10 @@ def train(config: TrainConfig):
     # init wandb session for logging
     wandb_init(asdict(config))
 
+
     # data & dataloader setup
     dataset = SequenceDataset(
-        config.env_name, seq_len=config.seq_len, reward_scale=config.reward_scale
+        gym.make(config.env_name), seq_len=config.seq_len, reward_scale=config.reward_scale
     )
     trainloader = DataLoader(
         dataset,

@@ -21,3 +21,5 @@ dependencies:
     - cython==0.29.36
     - opencv-python==4.9.0
     - shapely
+    - git+https://github.com/huggingface/lerobot.git@main#egg=lerobot
+    - gym-pusht

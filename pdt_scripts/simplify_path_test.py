@@ -1,12 +1,10 @@
 import random
 
-import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.widgets import Button, Slider
 import tqdm
-from path_sampler import *
+from utils.path_sampler import *
 import matplotlib as mpl
-from timeit import default_timer as timer
 
 mpl.use('QtAgg')
 class PathSimplifierApp:

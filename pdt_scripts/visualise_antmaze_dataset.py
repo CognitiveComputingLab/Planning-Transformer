@@ -1,15 +1,13 @@
 import argparse
 import sys
 import tqdm
-import torch
 
-from models.utils import plot_and_log_paths, plot_and_log_paths_3d, log_tensor_as_image
+from utils.plotting_funcs import plot_and_log_paths, plot_and_log_paths_3d
 
 sys.path.append("models.utils")
 from models import DT, PDT
 import numpy as np
-from PIL import Image
-import os
+
 
 def main(output_directory):
     env_name = "antmaze-medium-diverse-v2"

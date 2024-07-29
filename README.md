@@ -20,6 +20,12 @@ Codebase for the Planning-Transformer advanced project.
 If using cuda run the following :
  1. pip3 uninstall torch & pip3 install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
 
+## Other errors
+
+If you get an error about botocore do
+1. pip uninstall botocore boto3 s3fs aiobotocore
+2. pip install boto3 botocore s3fs aiobotocore
+
 ## Faster Mujoco Render
 ### GPU rendering
 

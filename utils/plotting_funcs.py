@@ -325,3 +325,4 @@ def demo_goal_select(image_path, pos_mean, pos_std):
     time.sleep(1)
     plt.close()
     return goal[0]
+

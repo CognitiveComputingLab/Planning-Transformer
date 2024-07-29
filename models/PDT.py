@@ -1,7 +1,6 @@
 """
 Modified version of the single file implementation of Decision transformer as provided by the CORL team
 """
-import warnings
 
 # warnings.filterwarnings('ignore')
 # warnings.filterwarnings('ignore', category=DeprecationWarning, module='numpy.*')
@@ -13,17 +12,20 @@ import os, sys
 if os.getcwd() not in sys.path:
     sys.path.append(os.getcwd())
 
-# Modify PDT forward pass to generate planning tokens which use embedded dim and thus are the same size and able to be
-# concatenated
-
 import d4rl  # noqa
-
 from models.DT import *
-from models.utils import *
-from pdt_scripts.path_sampler import PathSampler
+from utils.plotting_funcs import *
+from utils.path_sampler import PathSampler
 from math import inf
 import re
 from pdt_scripts.generate_demo_videos import generate_demo_video
+from lerobot.common.datasets.lerobot_dataset import LeRobotDataset
+from functools import partial
+from d4rl.kitchen import kitchen_envs
+from d4rl.offline_env import OfflineEnv
+from utils.make_d4rl_env import *
+import gymnasium
+import gym_pusht
 
 from mujoco_py import GlfwContext
 
@@ -120,7 +122,8 @@ class TrainConfig:
     # ablation testing parameters main
     plan_sampling_method: Optional[int] = 4  # 1: fixed-time", 2: fixed-distance", 3: log-time", 4: log-distance
     plan_use_relative_states: Optional[bool] = True  # States have first state subtracted
-    goal_representation: Optional[int] = 3  # 1: Absolute Goal, 2: Relative goal, 3: State project to Goal and Absolute Goal
+    goal_representation: Optional[
+        int] = 3  # 1: Absolute Goal, 2: Relative goal, 3: State project to Goal and Absolute Goal
     plan_combine_observations: Optional[bool] = False  # Split observations into multiple tokens or combine
     plan_disabled: Optional[bool] = False  # turn off the plan
 
@@ -140,6 +143,8 @@ class TrainConfig:
     use_return_weighting: Optional[bool] = False
     eval_early_stop_step: Optional[int] = episode_len
     action_noise_scale: Optional[float] = 0.4
+    repo_id: Optional[str] = None
+    state_dim: Optional[int] = None
 
     demo_mode: Optional[bool] = False
 
@@ -186,6 +191,7 @@ class TrainConfig:
             self.num_eval_videos = 3
             self.eval_early_stop_step = 500
 
+
 class MakeGoalEnv(gym.Wrapper):
     def __init__(self, env, normalize, state_mean, state_std, goal_target=None):
         super().__init__(env)
@@ -195,8 +201,7 @@ class MakeGoalEnv(gym.Wrapper):
         self.state_std = state_std
         self.goal_target = goal_target
 
-    @property
-    def target_goal(self):
+    def get_target_goal(self, obs=None):
         if self.goal_target is not None:
             return self.goal_target
 
@@ -208,35 +213,44 @@ class MakeGoalEnv(gym.Wrapper):
             # return [0, 0]
             return normalize_state(self.env.target_goal, self.state_mean[0, :2], self.state_std[0, :2])
         if "kitchen" in env_id:
-            goal = self._get_obs()
+            goal = np.zeros(self.state_mean[0].shape) if obs is None else np.array(obs)
+
             for task in self.env.TASK_ELEMENTS:
                 subtask_indices = kitchen_envs.OBS_ELEMENT_INDICES[task]
                 subtask_goals = kitchen_envs.OBS_ELEMENT_GOALS[task]
                 goal[subtask_indices] = subtask_goals
             return normalize_state(goal, self.state_mean[0], self.state_std[0])
-        else:
-            return np.zeros((1, 1), dtype=np.float32)
-            # raise ValueError("Expected antmaze or kitchen env, found ", env_id)
 
+        return np.zeros((1, 1), dtype=np.float32)
+        # raise ValueError("Expected antmaze or kitchen env, found ", env_id)
+
+def obs_dict_to_vec(obs):
+    if type(obs) is dict:
+        # for handelling push-t's observation which returns a tuple
+        return np.concatenate((obs['agent_pos'], obs['environment_state']))
+    else:
+        return obs
 def wrap_goal_env(
         env: gym.Env,
         state_mean: Union[np.ndarray, float] = 0.0,
         state_std: Union[np.ndarray, float] = 1.0,
         reward_scale: float = 1.0,
         goal_target: list = None,
-) -> gym.Env:
+) -> MakeGoalEnv:
+    env = gym.wrappers.TransformObservation(env, partial(obs_dict_to_vec))
     env = gym.wrappers.TransformObservation(env, partial(normalize_state, state_mean=state_mean, state_std=state_std))
     if reward_scale != 1.0:
         env = gym.wrappers.TransformReward(env, partial(scale_reward, reward_scale=reward_scale))
     env = MakeGoalEnv(env, normalize_state, state_mean, state_std, goal_target)
     return env
 
+
 class SequencePlanDataset(SequenceDataset):
-    def __init__(self, env_name: str, seq_len: int = 10, reward_scale: float = 1.0, path_length=10,
+    def __init__(self, env: OfflineEnv, seq_len: int = 10, reward_scale: float = 1.0, path_length=10,
                  embedding_dim: int = 128, plan_sampling_method: int = 4, plan_max_trajectory_ratio=0.5,
                  plan_combine: bool = False, plan_disabled: bool = False, plan_indices: Tuple[int, ...] = (0, 1),
                  is_goal_conditioned: bool = False, plans_use_actions: bool = False):
-        super().__init__(env_name, seq_len, reward_scale)
+        super().__init__(env, seq_len, reward_scale)
         self.path_length = path_length
         self.plan_indices = range(0, self.state_mean.shape[1]) if plan_indices is None else plan_indices
         self.plans_use_actions = plans_use_actions
@@ -407,7 +421,7 @@ class PlanningDecisionTransformer(DecisionTransformer):
                          **kwargs
                          )
         self.goal_cond = len(goal_indices) > 0
-        self.goal_length = 0 if not self.goal_cond else 2 if goal_representation == 3 else 1
+        self.goal_length = 0 if not self.goal_cond else 2 if goal_representation in [3,4] else 1
 
         self.blocks = nn.ModuleList(
             [
@@ -611,7 +625,7 @@ def eval_rollout(
     pt_frames = []
     plan = None
     plan_paths = []
-    goal_unmodified = env.target_goal
+    goal_unmodified = env.get_target_goal(obs=states[0,0].cpu())
     goal = torch.tensor(goal_unmodified, dtype=torch.float32, device=device).unsqueeze(0).unsqueeze(0)
 
     if pdt_model.non_plan_downweighting < 0:
@@ -711,6 +725,7 @@ def eval_rollout(
             attention_map_frames.append(log_attention_maps(attention_maps, log_to_wandb=False))
 
         if done:
+            print("broke", reward)
             break
 
         # recent_states = states[0,step-29:step+1,:2]
@@ -734,11 +749,19 @@ def eval_rollout(
     #     pickle.dump(attention_map_all_raw, f)
 
     if pdt_model.non_plan_downweighting < 0:
-        pdt_model.downweight_non_plan(3 + pdt_model.goal_representation, pdt_model.plan_length, 0.0)
+        pdt_model.downweight_non_plan(2 + pdt_model.goal_length, pdt_model.plan_length, 0.0)
 
     ant_path = states[0, :int(episode_len + 1)].cpu().numpy()
     return episode_return, episode_len, attention_map_frames, render_frames, pt_frames, plan_paths, ant_path, \
         goal_unmodified
+
+
+env_to_lerobot_repoid = {
+    'gym_pusht/PushT-v0': 'lerobot/pusht',
+    'gym_aloha/AlohaInsertion-v0': 'lerobot/aloha_sim_insertion_human',
+    'gym_aloha/AlohaTransferCube-v0': 'lerobot/aloha_sim_transfer_cube_human',
+    'gym_xarm/XarmLift-v0': 'lerobot/xarm_lift_medium'
+}
 
 
 @pyrallis.wrap()
@@ -748,9 +771,20 @@ def train(config: TrainConfig):
     # init wandb session for logging
     wandb_init(asdict(config))
 
+    eval_env = create_lerobot_d4rl_wrapper(
+        gymnasium.make(
+            config.env_name,
+            obs_type= "environment_state_agent_pos" if "pusht" in config.env_name else "state",
+            render_mode="rgb_array",
+            visualization_height=384,
+            visualization_width=384,
+        ),
+        repo_id=config.repo_id
+    ) if config.env_name in env_to_lerobot_repoid else gym.make(config.env_name)
+
     # data & dataloader setup
     dataset = SequencePlanDataset(
-        config.env_name,
+        eval_env,
         seq_len=config.seq_len,
         reward_scale=config.reward_scale,
         path_length=config.num_plan_points,
@@ -779,7 +813,7 @@ def train(config: TrainConfig):
         ))
     # evaluation environment with state & reward preprocessing (as in dataset above)
     eval_env = wrap_goal_env(
-        env=gym.make(config.env_name),
+        env=eval_env,
         state_mean=dataset.state_mean,
         state_std=dataset.state_std,
         reward_scale=config.reward_scale,
@@ -787,7 +821,7 @@ def train(config: TrainConfig):
     )
 
     # DT model & optimizer & scheduler setup
-    config.state_dim = eval_env.observation_space.shape[0]
+    config.state_dim = config.state_dim or eval_env.observation_space.shape[0]
     config.action_dim = eval_env.action_space.shape[0]
     pdt_model = PlanningDecisionTransformer(
         state_dim=config.state_dim,
@@ -842,7 +876,7 @@ def train(config: TrainConfig):
 
     print(f"Total parameters (DT): {sum(p.numel() for p in pdt_model.parameters())}")
     trainloader_iter = iter(trainloader)
-    first_batch = None
+    # first_batch = None
 
     for step in trange(step_start, config.update_steps + step_start, desc="Training"):
         # print(f"step {step} in train loop")
@@ -986,6 +1020,7 @@ def train(config: TrainConfig):
                         action_noise_scale=config.action_noise_scale,
                         state_noise_scale=config.state_noise_scale
                     )
+
                     if len(attention_frames):
                         arrays_to_video(attention_frames, f'{video_folder}/attention_t={step}-ep={ep_id}.mp4',
                                         scale_factor=5)
