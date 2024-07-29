@@ -36,7 +36,7 @@ record_video: 1
 run_name: "run_11"
 plan_length: 1
 eval_offline_every: 5000
-bg_image: "./antmaze_umaze_bg.png"
+bg_image: "antmaze_umaze_bg.png"
 eval_path_plot_every: 2500
 num_plan_points: 10
 plan_bar_visualisation: false

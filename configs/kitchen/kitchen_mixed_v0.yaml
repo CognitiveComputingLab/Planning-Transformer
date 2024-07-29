@@ -33,21 +33,21 @@ weight_decay: 0.0001
 log_attn_weights: 1
 log_attn_every: 250
 record_video: 1
-run_name: "debugging"
+run_name: "fixed-indices"
 eval_offline_every: 5000
-bg_image: "./bg_images/kitchen_bg.png"
+bg_image: "kitchen_bg.png"
 eval_path_plot_every: 2500
 num_plan_points: 10
 plan_bar_visualisation: false
 replanning_interval: 5 #80
-num_eval_videos: 0 # Video rendering can be slow for kitchen env
+num_eval_videos: 1 # Video rendering can be slow for kitchen env
 action_noise_scale: 0.0 # 0.4
 plan_max_trajectory_ratio: 1.0 # 0.5
 state_noise_scale: 0.0 # 0.0
 plan_disabled: False
 use_two_phase_training: false # false
 is_goal_conditioned: true # true
-goal_indices: [17,18,22,23, 24, 25, 26, 27, 28, 29]
+goal_indices: [11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29]
 #plan_indices: [17,18,22,23, 24, 25, 26, 27, 28, 29]
 path_viz_indices: [23,24]
 plans_use_actions: True

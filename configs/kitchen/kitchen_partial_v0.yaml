@@ -35,7 +35,7 @@ log_attn_every: 250
 record_video: 1
 run_name: "run_25"
 eval_offline_every: 5000
-bg_image: "./bg_images/kitchen_bg.png"
+bg_image: "kitchen_bg.png"
 eval_path_plot_every: 2500
 num_plan_points: 10
 plan_bar_visualisation: false
@@ -49,7 +49,7 @@ plan_combine_observations: False
 plan_disabled: False
 use_two_phase_training: false # false
 is_goal_conditioned: true # true
-goal_indices: [17,18,22,23, 24, 25, 26, 27, 28, 29]
+goal_indices: [17,18,19, 22,23, 24, 25, 26, 27, 28, 29]
 #plan_indices: [17,18,22,23, 24, 25, 26, 27, 28, 29]
 path_viz_indices: [23,24]
 plans_use_actions: true

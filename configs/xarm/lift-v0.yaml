@@ -3,7 +3,7 @@ batch_size: 128 #64 #256
 betas:
 - 0.9
 - 0.999
-checkpoints_path: "./checkpoints/insertion_human/PDT-oracle"
+checkpoints_path: "./checkpoints/xarmlift/PDT-oracle"
 clip_grad: 0.25
 deterministic_torch: false
 device: cuda
@@ -36,7 +36,7 @@ log_attn_every: 250
 record_video: 1
 run_name: "debugging_goal"
 eval_offline_every: 5000
-bg_image: "./bg_images/kitchen_bg.png"
+bg_image: "kitchen_bg.png"
 eval_path_plot_every: 2500
 num_plan_points: 10
 plan_bar_visualisation: false

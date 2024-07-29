@@ -14,15 +14,19 @@ Codebase for the Planning-Transformer advanced project.
    1. Make sure gcc is installed. Otherwise, install with `sudo apt update && sudo apt install build-essential -y`
    1. If you get any errors about QT try
       2. `pip uninstall PyQt5 opencv-python & pip install opencv-python ==4.9.0.80`
-5. Conda activate planning-transformer
+3. Conda activate planning-transformer
 4. Cd to the Planning-Transformer directory then run `export PYTHONPATH="$(pwd):$PYTHONPATH"` in the terminal
+5. (optional) install CALVIN
+   6. Download `calvin.gz` (dataset) following the instructions at https://github.com/clvrai/skimo and place it in the `envs` directory.
+   7. Convert `install.sh` to a unix file with `sudo apt-get install dos2unix && dos2unix install.sh`
+   8. `cd envs/calvin && && bash install.sh`
 
 If using cuda run the following :
  1. pip3 uninstall torch & pip3 install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
 
 ## Other errors
 
-If you get an error about botocore do
+If you get an error about botocore do:
 1. pip uninstall botocore boto3 s3fs aiobotocore
 2. pip install boto3 botocore s3fs aiobotocore
 

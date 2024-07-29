@@ -19,13 +19,10 @@ from utils.path_sampler import PathSampler
 from math import inf
 import re
 from pdt_scripts.generate_demo_videos import generate_demo_video
-from lerobot.common.datasets.lerobot_dataset import LeRobotDataset
 from functools import partial
 from d4rl.kitchen import kitchen_envs
-from d4rl.offline_env import OfflineEnv
 from utils.make_d4rl_env import *
 import gymnasium
-import gym_pusht
 
 from mujoco_py import GlfwContext
 
@@ -34,7 +31,6 @@ GlfwContext(offscreen=True)  # Create a window to init GLFW.
 import mujoco_py
 
 print(mujoco_py.cymj)
-
 
 @dataclass
 class TrainConfig:
@@ -193,9 +189,10 @@ class TrainConfig:
 
 
 class MakeGoalEnv(gym.Wrapper):
-    def __init__(self, env, normalize, state_mean, state_std, goal_target=None):
+    def __init__(self, env, env_name, normalize, state_mean, state_std, goal_target=None):
         super().__init__(env)
         assert callable(normalize)
+        self.env_name = env_name
         self.normalize = normalize
         self.state_mean = state_mean
         self.state_std = state_std
@@ -205,14 +202,13 @@ class MakeGoalEnv(gym.Wrapper):
         if self.goal_target is not None:
             return self.goal_target
 
-        env_id = self.env.spec.id
-        if "antmaze" in env_id:
+        if "antmaze" in self.env_name:
             # print(env.target_goal)
             # return [-1.1, -1.1]
             # return [-1.8, -2.3]
             # return [0, 0]
             return normalize_state(self.env.target_goal, self.state_mean[0, :2], self.state_std[0, :2])
-        if "kitchen" in env_id:
+        if "kitchen" in self.env_name:
             goal = np.zeros(self.state_mean[0].shape) if obs is None else np.array(obs)
 
             for task in self.env.TASK_ELEMENTS:
@@ -220,6 +216,10 @@ class MakeGoalEnv(gym.Wrapper):
                 subtask_goals = kitchen_envs.OBS_ELEMENT_GOALS[task]
                 goal[subtask_indices] = subtask_goals
             return normalize_state(goal, self.state_mean[0], self.state_std[0])
+        if "calvin" in self.env_name:
+            goal = np.zeros(self.state_mean[0].shape) if obs is None else np.array(obs)
+            goal[15:21] = np.array([0.25, 0.15, 0, 0.088, 1, 1])
+            return goal
 
         return np.zeros((1, 1), dtype=np.float32)
         # raise ValueError("Expected antmaze or kitchen env, found ", env_id)
@@ -232,6 +232,7 @@ def obs_dict_to_vec(obs):
         return obs
 def wrap_goal_env(
         env: gym.Env,
+        env_name: str,
         state_mean: Union[np.ndarray, float] = 0.0,
         state_std: Union[np.ndarray, float] = 1.0,
         reward_scale: float = 1.0,
@@ -241,7 +242,7 @@ def wrap_goal_env(
     env = gym.wrappers.TransformObservation(env, partial(normalize_state, state_mean=state_mean, state_std=state_std))
     if reward_scale != 1.0:
         env = gym.wrappers.TransformReward(env, partial(scale_reward, reward_scale=reward_scale))
-    env = MakeGoalEnv(env, normalize_state, state_mean, state_std, goal_target)
+    env = MakeGoalEnv(env, env_name, normalize_state, state_mean, state_std, goal_target)
     return env
 
 
@@ -725,7 +726,6 @@ def eval_rollout(
             attention_map_frames.append(log_attention_maps(attention_maps, log_to_wandb=False))
 
         if done:
-            print("broke", reward)
             break
 
         # recent_states = states[0,step-29:step+1,:2]
@@ -756,14 +756,6 @@ def eval_rollout(
         goal_unmodified
 
 
-env_to_lerobot_repoid = {
-    'gym_pusht/PushT-v0': 'lerobot/pusht',
-    'gym_aloha/AlohaInsertion-v0': 'lerobot/aloha_sim_insertion_human',
-    'gym_aloha/AlohaTransferCube-v0': 'lerobot/aloha_sim_transfer_cube_human',
-    'gym_xarm/XarmLift-v0': 'lerobot/xarm_lift_medium'
-}
-
-
 @pyrallis.wrap()
 def train(config: TrainConfig):
     num_cores = os.sysconf("SC_NPROCESSORS_ONLN")
@@ -771,16 +763,45 @@ def train(config: TrainConfig):
     # init wandb session for logging
     wandb_init(asdict(config))
 
-    eval_env = create_lerobot_d4rl_wrapper(
-        gymnasium.make(
-            config.env_name,
-            obs_type= "environment_state_agent_pos" if "pusht" in config.env_name else "state",
-            render_mode="rgb_array",
-            visualization_height=384,
-            visualization_width=384,
-        ),
-        repo_id=config.repo_id
-    ) if config.env_name in env_to_lerobot_repoid else gym.make(config.env_name)
+    # environment setup uses code from https://github.com/seohongpark/HIQL/blob/master/main.py
+    if 'antmaze' in config.env_name:
+        if 'ultra' in config.env_name:
+            pass
+        eval_env = gym.make(config.env_name)
+
+        dist, lookat = (70, 26, 18) if 'ultra' in config.env_name else (50, 18, 12)
+        eval_env.viewer.cam.lookat[:2] = [lookat, lookat // 1.5]
+        eval_env.viewer.cam.distance = dist
+        eval_env.viewer.cam.elevation = -90
+    elif 'kitchen' in config.env_name:
+        eval_env = gym.make(config.env_name)
+    elif config.env_name in lerobot_envs:
+        eval_env = LerobotD4RLWrapper(
+            gymnasium.make(
+                config.env_name,
+                obs_type= "environment_state_agent_pos" if "pusht" in config.env_name else "state",
+                render_mode="rgb_array",
+                visualization_height=384,
+                visualization_width=384,
+            ),
+            repo_id=config.repo_id
+        )
+    elif 'calvin' in config.env_name:
+        from envs.calvin import CalvinEnv
+        from hydra import compose, initialize
+
+        # Initialize and configure the Calvin environment
+        initialize(config_path='../envs/conf')
+        cfg = compose(config_name='calvin')
+        eval_env = CalvinEnv(**cfg)
+        eval_env.max_episode_steps = cfg.max_episode_steps = 360
+
+        eval_env = CalvinD4RLWrapper(
+            eval_env,
+            data_path='data/calvin.gz',  # Assuming config has a data_path attribute
+            ref_max_score=4.,  # Assuming config has these attributes
+            ref_min_score=0.
+        )
 
     # data & dataloader setup
     dataset = SequencePlanDataset(
@@ -814,6 +835,7 @@ def train(config: TrainConfig):
     # evaluation environment with state & reward preprocessing (as in dataset above)
     eval_env = wrap_goal_env(
         env=eval_env,
+        env_name=config.env_name,
         state_mean=dataset.state_mean,
         state_std=dataset.state_std,
         reward_scale=config.reward_scale,

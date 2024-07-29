@@ -35,7 +35,7 @@ log_attn_every: 250
 record_video: 1
 run_name: "run_24"
 eval_offline_every: 5000
-bg_image: "./bg_images/antmaze_medium_bg.png"
+bg_image: "antmaze_medium_bg.png"
 eval_path_plot_every: 2500
 num_plan_points: 10
 plan_bar_visualisation: false

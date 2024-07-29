@@ -168,7 +168,7 @@ def prepare_plot(image_path, pos_mean, pos_std):
 
     # Load the background image
     if image_path is not None:
-        bg_image = plt.imread(image_path)
+        bg_image = plt.imread('./visualisations/bg_images/'+image_path)
         ax.imshow(bg_image, extent=(tl[0], br[0], tl[1], br[1]))
 
     return fig, ax
@@ -259,7 +259,7 @@ def plot_orientation_vectors(ax, position, forward_vector, up_vector, right_vect
 def plot_and_log_paths_3d(image_path, start, goal, plan_paths, ant_path, orientation_path, output_folder, index,
                           pos_mean, pos_std, log_to_wandb=True, save_data=True):
     os.makedirs(output_folder, exist_ok=True)
-    bg_image = plt.imread(image_path)
+    bg_image = plt.imread('./visualisations/bg_images/'+image_path)
     fig, ax = plt.subplots(subplot_kw={'projection': '3d'}, figsize=(12, 8))
     ax.view_init(elev=60, azim=-45)
 
