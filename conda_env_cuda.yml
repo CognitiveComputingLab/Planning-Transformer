@@ -16,7 +16,7 @@ dependencies:
 #    - mujoco==2.2.1 (needed for one of the envs but I forgot which)
 #    - mujoco-py==2.1.2.14
     - mujoco==3.1.4
-    - torch==1.11.0
+#    - torch==1.11.0 (not sure when this is needed but I think there's env needing it)
     - pyrallis==0.3.1
     - wandb==0.16.0
     - cython==0.29.36

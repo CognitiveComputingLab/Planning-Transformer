@@ -199,6 +199,9 @@ class MakeGoalEnv(gym.Wrapper):
         self.goal_target = goal_target
 
     def get_target_goal(self, obs=None):
+        # obs is already normalized, but goal isn't.
+        # We must be careful to normalize goal without re-normalizing obs (which will break our goals)
+
         if self.goal_target is not None:
             return self.goal_target
 
@@ -208,17 +211,19 @@ class MakeGoalEnv(gym.Wrapper):
             # return [-1.8, -2.3]
             # return [0, 0]
             return normalize_state(self.env.target_goal, self.state_mean[0, :2], self.state_std[0, :2])
-        if "kitchen" in self.env_name:
+        if "kitchen" in self.env_name or "calvin" in self.env_name:
             goal = np.zeros(self.state_mean[0].shape) if obs is None else np.array(obs)
 
-            for task in self.env.TASK_ELEMENTS:
-                subtask_indices = kitchen_envs.OBS_ELEMENT_INDICES[task]
-                subtask_goals = kitchen_envs.OBS_ELEMENT_GOALS[task]
-                goal[subtask_indices] = subtask_goals
-            return normalize_state(goal, self.state_mean[0], self.state_std[0])
-        if "calvin" in self.env_name:
-            goal = np.zeros(self.state_mean[0].shape) if obs is None else np.array(obs)
-            goal[15:21] = np.array([0.25, 0.15, 0, 0.088, 1, 1])
+            if "kitchen" in self.env_name:
+                for task in self.env.TASK_ELEMENTS:
+                    indices = kitchen_envs.OBS_ELEMENT_INDICES[task]
+                    values = kitchen_envs.OBS_ELEMENT_GOALS[task]
+                    goal[indices] = normalize_state(values, self.state_mean[0][indices], self.state_std[0][indices])
+
+            elif "calvin" in self.env_name:
+                indices = slice(15, 21)
+                values = np.array([0.25, 0.15, 0, 0.088, 1, 1])
+                goal[indices] = normalize_state(values, self.state_mean[0][indices], self.state_std[0][indices])
             return goal
 
         return np.zeros((1, 1), dtype=np.float32)
@@ -483,6 +488,7 @@ class PlanningDecisionTransformer(DecisionTransformer):
         device = states.device
         # [batch_size, seq_len, emb_dim]
         time_emb = self.timestep_emb(time_steps)
+        # print(states.shape, self.state_emb.in_features, self.state_emb.out_features)
         state_emb_no_time_emb = self.state_emb(states)
         # state_emb_no_time_emb = self.plan_emb(states[:, :, :2])
         state_emb = state_emb_no_time_emb + (time_emb if self.use_timestep else 0)

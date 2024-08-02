@@ -22,7 +22,7 @@ Codebase for the Planning-Transformer advanced project.
    8. `cd envs/calvin && && bash install.sh`
 
 If using cuda run the following :
- 1. pip3 uninstall torch & pip3 install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
+ 1. pip3 uninstall torch torchvision -y && pip3 install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
 
 ## Other errors
 

@@ -7,19 +7,20 @@ import sys
 
 # Define the parameters and their possible values
 parameters = {
-    # "plan_sampling_method": [1, 2, 3, 4],
+    "plan_sampling_method": [2, 1],
     # "plan_use_relative_states": [True, False],
     "attention_dropout": [0.15, 0.2],
     # "plans_use_actions": [False, True],
     "goal_representation": [1, 3, 4],
     # "plan_combine_observations": [True, False],
     # "use_timestep_embedding": [True, False],
-    "plan_max_trajectory_ratio": [0.5, 1.0],
-    "action_noise_scale": [0.0, 0.1, 0.2]
+    # "plan_max_trajectory_ratio": [0.5, 1.0],
+    # "action_noise_scale": [0.0, 0.1, 0.2]
 }
 
 config_files = [
-    "configs/kitchen/kitchen_mixed_v0.yaml",
+    # "configs/kitchen/kitchen_mixed_v0.yaml",
+    "configs/calvin/calvin_v0.yaml",
     # "configs/antmaze/large_diverse_v2.yaml",
     # "configs/gym_mujoco/halfcheetah_medium_replay_v2.yaml"
     # "configs/antmaze/ultra_diverse_v0.yaml"
