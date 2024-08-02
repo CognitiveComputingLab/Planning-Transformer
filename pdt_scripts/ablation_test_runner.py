@@ -7,18 +7,22 @@ import sys
 
 # Define the parameters and their possible values
 parameters = {
-    "plan_sampling_method": [1, 2, 3, 4],
-    "plan_use_relative_states": [True, False],
-    "goal_representation": [1, 2, 3, 4],
-    "plan_combine_observations": [True, False],
-    "use_timestep_embedding": [True, False],
-    "plan_max_trajectory_ratio": [0.5, 1.0]
+    # "plan_sampling_method": [1, 2, 3, 4],
+    # "plan_use_relative_states": [True, False],
+    "attention_dropout": [0.15, 0.2],
+    # "plans_use_actions": [False, True],
+    "goal_representation": [1, 3, 4],
+    # "plan_combine_observations": [True, False],
+    # "use_timestep_embedding": [True, False],
+    "plan_max_trajectory_ratio": [0.5, 1.0],
+    "action_noise_scale": [0.0, 0.1, 0.2]
 }
 
 config_files = [
-    # "configs/kitchen/kitchen_mixed_v0.yaml",
+    "configs/kitchen/kitchen_mixed_v0.yaml",
     # "configs/antmaze/large_diverse_v2.yaml",
-    "configs/gym_mujoco/halfcheetah_medium_replay_v2.yaml"
+    # "configs/gym_mujoco/halfcheetah_medium_replay_v2.yaml"
+    # "configs/antmaze/ultra_diverse_v0.yaml"
 ]
 
 def find_project_root() -> str:
@@ -48,7 +52,7 @@ def run_training(config_path: str, run_name: str, project_root: str):
 def modify_and_run(config: Dict[str, Any], param: str, value: Any, idx: int, project_root: str):
     modified_config = deepcopy(config)
     modified_config[param] = value
-    run_name = f"ablation_test_{idx}"
+    run_name = f"ablation_test_{idx+1}"
     modified_config['run_name'] = run_name
     temp_config_path = os.path.join(project_root, f"temp_config_{idx}.yaml")
     save_config(modified_config, temp_config_path)
@@ -56,6 +60,7 @@ def modify_and_run(config: Dict[str, Any], param: str, value: Any, idx: int, pro
     os.remove(temp_config_path)
 
 def run_ablation_tests(config_files: List[str], parameters: Dict[str, List[Any]], project_root: str):
+    has_run_default = False
     for config_file in config_files:
         idx = 0
         full_config_path = os.path.join(project_root, config_file)
@@ -64,10 +69,11 @@ def run_ablation_tests(config_files: List[str], parameters: Dict[str, List[Any]]
         for param, values in parameters.items():
             default_value = config.get(param)
             for value in values:
-                if value != default_value:
+                if value != default_value or not has_run_default:
                     print(f"Testing {param} = {value}")
                     modify_and_run(config, param, value, idx, project_root)
                     idx += 1
+                    has_run_default = True if value == default_value else has_run_default
         print(f"Completed ablation tests for {config_file}\n")
     print("All ablation tests completed.")
 

@@ -10,7 +10,7 @@ device: cuda
 embedding_dim: 192
 embedding_dropout: 0.1 #0.1
 env_name: "calvin-v0"
-episode_len: 1000
+episode_len: 360
 eval_episodes: 15 #15
 eval_every: 5000
 eval_seed: 43 #42 or -1 to seed every run the same

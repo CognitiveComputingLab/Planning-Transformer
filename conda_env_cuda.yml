@@ -13,8 +13,9 @@ dependencies:
   - pip:
     - gym==0.23.1
     - git+https://github.com/rail-berkeley/d4rl@master#egg=d4rl
-    - mujoco==2.2.1
-    - mujoco-py==2.1.2.14
+#    - mujoco==2.2.1 (needed for one of the envs but I forgot which)
+#    - mujoco-py==2.1.2.14
+    - mujoco==3.1.4
     - torch==1.11.0
     - pyrallis==0.3.1
     - wandb==0.16.0
@@ -24,3 +25,4 @@ dependencies:
     - gym-pusht
     - git+https://github.com/mees/calvin.git@main#egg=calvin
     - git+https://github.com/huggingface/lerobot.git@main#egg=lerobot
+#    - gym-xarm

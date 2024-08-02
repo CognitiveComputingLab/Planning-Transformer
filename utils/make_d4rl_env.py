@@ -8,14 +8,14 @@ import gzip
 import pickle
 
 # list of lerobot envs supported
-lerobot_envs = {'gym_pusht/PushT-v0', 'aloha/AlohaInsertion-v0',  'aloha/AlohaTransferCube-v0', 'xarm/XarmLift-v0'}
+lerobot_envs = {'gym_pusht/PushT-v0', 'gym_aloha/AlohaInsertion-v0',  'gym_aloha/AlohaTransferCube-v0', 'gym_xarm/XarmLift-v0'}
 
 # Mapping of environments to their corresponding lerobot repo_id and score ranges
 env_to_lerobot_repoid = {
     'gym_pusht/PushT-v0': ('lerobot/pusht', 1.0, 0.0),
-    'aloha/AlohaInsertion-v0': ('lerobot/aloha_sim_insertion_human', 1.0, 0.0),
-    'aloha/AlohaTransferCube-v0': ('lerobot/aloha_sim_transfer_cube_human', 1.0, 0.0),
-    'xarm/XarmLift-v0': ('lerobot/xarm_lift_medium', 1.0, 0.0)
+    'gym_aloha/AlohaInsertion-v0': ('lerobot/aloha_sim_insertion_human', 1.0, 0.0),
+    'gym_aloha/AlohaTransferCube-v0': ('lerobot/aloha_sim_transfer_cube_human', 1.0, 0.0),
+    'gym_xarm/XarmLift-v0': ('lerobot/xarm_lift_medium', 1.0, 0.0)
 }
 
 

@@ -3,19 +3,19 @@ batch_size: 128 #64 #256
 betas:
 - 0.9
 - 0.999
-checkpoints_path: "./checkpoints/xarmlift/PDT-oracle"
+checkpoints_path: "./checkpoints/transfer_human/PDT-oracle"
 clip_grad: 0.25
 deterministic_torch: false
 device: cuda
 embedding_dim: 192
 embedding_dropout: 0.1 #0.1
-env_name: "gym_xarm/XarmLift-v0"
-repo_id: "lerobot/xarm_lift_medium"
-episode_len: 200
+env_name: "gym_aloha/AlohaTransferCube-v0"
+repo_id: "lerobot/aloha_sim_transfer_cube_human"
+episode_len: 400
 eval_episodes: 15 #15
 eval_every: 5000
 eval_seed: 43 #42 or -1 to seed every run the same
-group: "dt-xarm-lift-PDT"
+group: "dt-transfer-PDT"
 learning_rate: 0.0004 #0.0002
 max_action: 1.0
 name: "PDT-oracle"

@@ -766,11 +766,13 @@ def train(config: TrainConfig):
     # environment setup uses code from https://github.com/seohongpark/HIQL/blob/master/main.py
     if 'antmaze' in config.env_name:
         if 'ultra' in config.env_name:
-            pass
+            sys.path.append('envs')
+            import d4rl_ext
         eval_env = gym.make(config.env_name)
+        eval_env.render(mode='rgb_array', width=200, height=200)
 
-        dist, lookat = (70, 26, 18) if 'ultra' in config.env_name else (50, 18, 12)
-        eval_env.viewer.cam.lookat[:2] = [lookat, lookat // 1.5]
+        dist, lookat = (70, (26, 18)) if 'ultra' in config.env_name else (50, (18, 12))
+        eval_env.viewer.cam.lookat[:2] = lookat
         eval_env.viewer.cam.distance = dist
         eval_env.viewer.cam.elevation = -90
     elif 'kitchen' in config.env_name:

@@ -1,0 +1,74 @@
+attention_dropout: 0.2 #0.15 #0.1
+batch_size: 128 #64 #256
+betas:
+- 0.9
+- 0.999
+checkpoints_path: "./checkpoints/ultra_diverse/PDT-oracle"
+clip_grad: 0.25
+deterministic_torch: false
+device: cuda
+embedding_dim: 128
+embedding_dropout: 0 #0.1
+env_name: "antmaze-ultra-diverse-v0"
+episode_len: 1000
+eval_episodes: 50 #15
+eval_every: 5000
+eval_seed: 42 #42 or -1 to seed every run the same
+group: "dt-antmaze-ultra-diverse-PDT-oracle"
+learning_rate: 0.0002 #0.0001 #0.004
+max_action: 1.0
+name: "PDT-oracle"
+num_heads: 2
+num_layers: 3
+num_workers: 8
+project: "CORL"
+residual_dropout: 0.15 #0.1
+reward_scale: 1.0
+seq_len: 10
+target_returns: [1.5]
+train_seed: 16 #10
+update_steps: 200000
+warmup_steps: 10000
+weight_decay: 0.0001
+log_attn_weights: 1
+log_attn_every: 250
+record_video: 1
+run_name: "validation"
+eval_offline_every: 5000
+bg_image: "antmaze_large_bg.png"
+eval_path_plot_every: 2500
+num_plan_points: 10
+plan_bar_visualisation: false
+replanning_interval: 10 #80
+num_eval_videos: 0 #1
+action_noise_scale: 0.25 # 0.4
+plan_sampling_method: 2 # 1: fixed-time", 2: fixed-distance", 3: log-time", 4: log-distance
+plan_max_trajectory_ratio: 0.5 # 0.5
+state_noise_scale: 0.0 # 0.0
+plan_combine_observations: False
+plan_disabled: False
+use_two_phase_training: false # false
+is_goal_conditioned: true # true
+goal_indices: [0,1]
+plan_indices: [0,1]
+path_viz_indices: [0,1]
+plans_use_actions: false
+non_plan_downweighting: 0 #-2
+use_timestep_embedding: false
+plan_use_relative_states: true
+goal_representation: 3 # 1: Absolute Goal, 2: Relative goal, 3: State project to Goal and Absolute Goal
+
+#checkpoint_to_load: "PDT-oracle-antmaze-ultra-diverse-v0-647a01f7" # ablation 4.3 (attention 0.2)
+#checkpoint_step_to_load: 135000 # score: 0.40 (0.55 with 0.25 or 0.3 action noise)
+
+#checkpoint_to_load: "PDT-oracle-antmaze-ultra-diverse-v0-c7b3536d" # ablation 4.6 (goal repr 1)
+#checkpoint_step_to_load: 135000 # score: 0.36 (0.49 with action noise 0.15)
+#
+#checkpoint_to_load: "PDT-oracle-antmaze-ultra-diverse-v0-d3de5c31" # ablation 4.9 (action noise 0.15)
+#checkpoint_step_to_load: 70000 # score: 0.32
+
+#checkpoint_to_load: "PDT-oracle-antmaze-ultra-diverse-v0-d3de5c31" # ablation 4.9 (action noise 0.15)
+#checkpoint_step_to_load: 70000 # score: 0.32
+
+checkpoint_to_load: "PDT-oracle-antmaze-ultra-diverse-v0-c301554d" # ablation 5.` (action noise 0.25)
+checkpoint_step_to_load: 135000 # score: 56%

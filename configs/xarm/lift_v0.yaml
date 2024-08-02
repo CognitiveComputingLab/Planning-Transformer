@@ -3,19 +3,20 @@ batch_size: 128 #64 #256
 betas:
 - 0.9
 - 0.999
-checkpoints_path: "./checkpoints/kitchen_mixed/PDT-oracle"
+checkpoints_path: "./checkpoints/xarmlift/PDT-oracle"
 clip_grad: 0.25
 deterministic_torch: false
 device: cuda
 embedding_dim: 192
 embedding_dropout: 0.1 #0.1
-env_name: "kitchen-mixed-v0"
-episode_len: 1000
+env_name: "gym_xarm/XarmLift-v0"
+repo_id: "lerobot/xarm_lift_medium"
+episode_len: 300
 eval_episodes: 15 #15
 eval_every: 5000
 eval_seed: 43 #42 or -1 to seed every run the same
-group: "dt-kitchen-mixed-PDT"
-learning_rate: 0.0004 #0.0002
+group: "dt-xarm-lift-PDT"
+learning_rate: 0.0002 #0.0002
 max_action: 1.0
 name: "PDT-oracle"
 num_heads: 2
@@ -25,7 +26,7 @@ project: "CORL"
 residual_dropout: 0.15 #0.1
 reward_scale: 1.0
 seq_len: 10
-target_returns: [4.0]
+target_returns: [0.0]
 train_seed: 16 #10
 update_steps: 200000
 warmup_steps: 10000
@@ -33,7 +34,7 @@ weight_decay: 0.0001
 log_attn_weights: 1
 log_attn_every: 250
 record_video: 1
-run_name: "fixed-indices"
+run_name: "run0"
 eval_offline_every: 5000
 bg_image: "kitchen_bg.png"
 eval_path_plot_every: 2500
@@ -46,14 +47,14 @@ plan_max_trajectory_ratio: 1.0 # 0.5
 state_noise_scale: 0.0 # 0.0
 plan_disabled: False
 use_two_phase_training: false # false
-is_goal_conditioned: true # true
-goal_indices: [11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29]
+is_goal_conditioned: false # true
+#goal_indices: [17,18,22,23, 24, 25, 26, 27, 28, 29]
 #plan_indices: [17,18,22,23, 24, 25, 26, 27, 28, 29]
-path_viz_indices: [23,24]
+path_viz_indices: [0,1]
 plans_use_actions: True
 non_plan_downweighting: 0 #-2
 use_timestep_embedding: true
 plan_combine_observations: False
-plan_sampling_method: 2 # 1: fixed-time", 2: fixed-distance", 3: log-time", 4: log-distance
+plan_sampling_method: 1 # 1: fixed-time", 2: fixed-distance", 3: log-time", 4: log-distance
 plan_use_relative_states: True
 goal_representation: 3 # 1: Absolute Goal, 2: Relative goal, 3: State project to Goal and Absolute Goal
