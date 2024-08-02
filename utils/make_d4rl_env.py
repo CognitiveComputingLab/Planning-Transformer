@@ -166,7 +166,7 @@ class CalvinD4RLWrapper(OfflineEnvWrapper):
             'terminals': [],
             'timeouts': []
         }
-
+        import pprint
         for i, d in enumerate(data):
             if len(d['obs']) < len(d['dones']):
                 continue  # Skip incomplete trajectories.
@@ -175,7 +175,7 @@ class CalvinD4RLWrapper(OfflineEnvWrapper):
             num_steps = d['obs'].shape[0] - 1
             data_dict['observations'].extend(d['obs'][:-1])
             data_dict['actions'].extend(d['actions'][:-1])
-            data_dict['rewards'].extend([0.0] * (num_steps - 1) + [1.0])  # Set reward to 1 for terminal step
+            data_dict['rewards'].extend(np.zeros(num_steps))
             data_dict['terminals'].extend([False] * (num_steps - 1) + [True])
             data_dict['timeouts'].extend([False] * num_steps)
 

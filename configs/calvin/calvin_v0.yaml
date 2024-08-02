@@ -10,7 +10,7 @@ device: cuda
 embedding_dim: 192
 embedding_dropout: 0.1 #0.1
 env_name: "calvin-v0"
-episode_len: 360
+episode_len: 500
 eval_episodes: 15 #15
 eval_every: 5000
 eval_seed: 43 #42 or -1 to seed every run the same
@@ -25,7 +25,7 @@ project: "CORL"
 residual_dropout: 0.15 #0.1
 reward_scale: 1.0
 seq_len: 10
-target_returns: [4.0]
+target_returns: [0.0]
 train_seed: 16 #10
 update_steps: 200000
 warmup_steps: 10000
@@ -33,7 +33,7 @@ weight_decay: 0.0001
 log_attn_weights: 1
 log_attn_every: 250
 record_video: 1
-run_name: "run3"
+run_name: "run4"
 eval_offline_every: 5000
 bg_image: "kitchen_bg.png"
 eval_path_plot_every: 2500
@@ -57,3 +57,4 @@ plan_combine_observations: False
 plan_sampling_method: 2 # 1: fixed-time", 2: fixed-distance", 3: log-time", 4: log-distance
 plan_use_relative_states: True
 goal_representation: 4 # 1: Absolute Goal, 2: Relative goal, 3: State project to Goal and Absolute Goal
+disable_return_targets: True

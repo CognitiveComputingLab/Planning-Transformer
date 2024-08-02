@@ -141,6 +141,7 @@ class TrainConfig:
     action_noise_scale: Optional[float] = 0.4
     repo_id: Optional[str] = None
     state_dim: Optional[int] = None
+    disable_return_targets: Optional[bool] = False
 
     demo_mode: Optional[bool] = False
 
@@ -614,6 +615,7 @@ def eval_rollout(
         state_noise_scale: float = 0.1,
         num_eps_with_logged_attention: int = 0,
         is_goal_conditioned: bool = False,
+        disable_return_targets: bool = False
 ) -> Tuple[float, float, list, list, list, list, np.ndarray, tuple]:
     states = torch.zeros(1, pdt_model.episode_len + 1, pdt_model.state_dim, dtype=torch.float, device=device)
     actions = torch.zeros(1, pdt_model.episode_len, pdt_model.action_dim, dtype=torch.float, device=device)
@@ -723,7 +725,7 @@ def eval_rollout(
         actions[:, step] = torch.as_tensor(predicted_action + action_noise)
         # actions[:, step] = torch.as_tensor(predicted_action)
         states[:, step + 1] = torch.as_tensor(next_state)
-        returns[:, step + 1] = torch.as_tensor(returns[:, step] - reward)
+        returns[:, step + 1] = torch.as_tensor(returns[:, step] - (0 if disable_return_targets else reward))
 
         episode_return += reward
         episode_len += 1
@@ -1048,7 +1050,8 @@ def train(config: TrainConfig):
                         replanning_interval=config.replanning_interval,
                         early_stop_step=config.eval_early_stop_step,
                         action_noise_scale=config.action_noise_scale,
-                        state_noise_scale=config.state_noise_scale
+                        state_noise_scale=config.state_noise_scale,
+                        disable_return_targets=config.disable_return_targets
                     )
 
                     if len(attention_frames):

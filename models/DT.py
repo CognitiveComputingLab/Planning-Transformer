@@ -324,6 +324,7 @@ class DecisionTransformer(nn.Module):
 
         self.out_norm = nn.LayerNorm(embedding_dim)
         # additional seq_len embeddings for padding timesteps
+
         self.timestep_emb = nn.Embedding(episode_len + seq_len, embedding_dim)
         self.state_emb = nn.Linear(state_dim, embedding_dim)
         self.action_emb = nn.Linear(action_dim, embedding_dim)
