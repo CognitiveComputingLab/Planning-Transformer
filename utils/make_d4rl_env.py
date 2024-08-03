@@ -8,7 +8,8 @@ import gzip
 import pickle
 
 # list of lerobot envs supported
-lerobot_envs = {'gym_pusht/PushT-v0', 'gym_aloha/AlohaInsertion-v0',  'gym_aloha/AlohaTransferCube-v0', 'gym_xarm/XarmLift-v0'}
+lerobot_envs = {'gym_pusht/PushT-v0', 'gym_aloha/AlohaInsertion-v0', 'gym_aloha/AlohaTransferCube-v0',
+                'gym_xarm/XarmLift-v0'}
 
 # Mapping of environments to their corresponding lerobot repo_id and score ranges
 env_to_lerobot_repoid = {
@@ -58,6 +59,14 @@ class LerobotD4RLWrapper(OfflineEnvWrapper):
             raise ValueError("Reference score not provided for env")
         return (score - self.ref_min_score) / (self.ref_max_score - self.ref_min_score)
 
+    # def normalize_action(self, action):
+    #     action, low, high = [np.array(x) for x in (action, self.action_space.low, self.action_space.high)]
+    #     return (action - low) / (high - low) * 2 - 1
+    #
+    # def un_normalize_action(self, action):
+    #     action, low, high = [np.array(x) for x in (action, self.action_space.low, self.action_space.high)]
+    #     return (action + 1) / 2 * (high - low) + low
+
     def get_dataset(self):
         if self.repo_id is None:
             raise ValueError("Offline env not configured with a repository ID.")
@@ -76,6 +85,7 @@ class LerobotD4RLWrapper(OfflineEnvWrapper):
         use_env_state = 'observation.environment_state' in dataset[0]
         for data in dataset:  # Assuming the dataset can be iterated in this manner
             data_dict['observations'].append(
+                # for push-t this is the agent position and the keypoints of the T
                 torch.cat((data['observation.state'], data['observation.environment_state']))
                 if use_env_state
                 else data['observation.state']
@@ -115,7 +125,7 @@ class LerobotD4RLWrapper(OfflineEnvWrapper):
 
     def step(self, action):
         observation, reward, terminated, timeout, info = self.env.step(action)
-        reward = reward if (terminated or timeout) else 0.0
+        # reward = reward if (terminated or timeout) else 0.0
         return observation, reward, terminated, info
 
     def reset(self, **kwargs):

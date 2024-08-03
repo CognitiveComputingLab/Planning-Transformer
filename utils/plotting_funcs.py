@@ -163,6 +163,8 @@ def prepare_plot(image_path, pos_mean, pos_std):
             tl, br = normalise_coords([[-6, -6], [14, 14]], pos_mean, pos_std)
     elif 'kitchen' in image_path:
         tl, br = normalise_coords([[-0.32, -0.85], [-0.22, 1.35]], pos_mean, pos_std)
+    elif 'pusht' in image_path:
+        tl, br = normalise_coords([[0, 0], [512, 512]], pos_mean, pos_std)
     else:
         tl, br = normalise_coords([[-0.5, -0.5], [-0.5, 0.5]], pos_mean, pos_std)
 
@@ -192,7 +194,7 @@ def plot_and_log_paths(image_path, start, goal, plan_paths, ant_path, output_fol
     if last_plan_only:
         plan_paths = plan_paths[-1:]
     for i, plan_path in enumerate(plan_paths):
-        if (i % 40 != 0 and i != len(plan_paths) - 1 and i != 0):
+        if (i % 10 != 0 and i != len(plan_paths) - 1 and i != 0):
             continue
         # if not (i == 0 or i == len(plan_paths)-1):
         #     continue

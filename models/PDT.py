@@ -23,6 +23,7 @@ from functools import partial
 from d4rl.kitchen import kitchen_envs
 from utils.make_d4rl_env import *
 import gymnasium
+import gym_pusht
 
 from mujoco_py import GlfwContext
 
@@ -31,6 +32,7 @@ GlfwContext(offscreen=True)  # Create a window to init GLFW.
 import mujoco_py
 
 print(mujoco_py.cymj)
+
 
 @dataclass
 class TrainConfig:
@@ -230,12 +232,15 @@ class MakeGoalEnv(gym.Wrapper):
         return np.zeros((1, 1), dtype=np.float32)
         # raise ValueError("Expected antmaze or kitchen env, found ", env_id)
 
+
 def obs_dict_to_vec(obs):
     if type(obs) is dict:
         # for handelling push-t's observation which returns a tuple
         return np.concatenate((obs['agent_pos'], obs['environment_state']))
     else:
         return obs
+
+
 def wrap_goal_env(
         env: gym.Env,
         env_name: str,
@@ -275,6 +280,7 @@ class SequencePlanDataset(SequenceDataset):
             # self.sample_prob = traj_dists / traj_dists.sum()
             self.sample_prob *= traj_dists / traj_dists.sum()
         self.sample_prob /= self.sample_prob.sum()
+
         self.expected_cum_reward = np.array(
             [traj['returns'][0] * p for traj, p in zip(self.dataset, self.sample_prob)]
         ).sum()
@@ -428,7 +434,7 @@ class PlanningDecisionTransformer(DecisionTransformer):
                          **kwargs
                          )
         self.goal_cond = len(goal_indices) > 0
-        self.goal_length = 0 if not self.goal_cond else 2 if goal_representation in [3,4] else 1
+        self.goal_length = 0 if not self.goal_cond else 2 if goal_representation in [3, 4] else 1
 
         self.blocks = nn.ModuleList(
             [
@@ -616,7 +622,7 @@ def eval_rollout(
         num_eps_with_logged_attention: int = 0,
         is_goal_conditioned: bool = False,
         disable_return_targets: bool = False
-) -> Tuple[float, float, list, list, list, list, np.ndarray, tuple]:
+) -> Tuple[float, float, list, list, list, list, np.ndarray, tuple, float]:
     states = torch.zeros(1, pdt_model.episode_len + 1, pdt_model.state_dim, dtype=torch.float, device=device)
     actions = torch.zeros(1, pdt_model.episode_len, pdt_model.action_dim, dtype=torch.float, device=device)
     returns = torch.zeros(1, pdt_model.episode_len + 1, dtype=torch.float, device=device)
@@ -634,8 +640,9 @@ def eval_rollout(
     pt_frames = []
     plan = None
     plan_paths = []
-    goal_unmodified = env.get_target_goal(obs=states[0,0].cpu())
+    goal_unmodified = env.get_target_goal(obs=states[0, 0].cpu())
     goal = torch.tensor(goal_unmodified, dtype=torch.float32, device=device).unsqueeze(0).unsqueeze(0)
+    max_return = -inf
 
     if pdt_model.non_plan_downweighting < 0:
         pdt_model.downweight_non_plan(2 + pdt_model.goal_length, pdt_model.plan_length,
@@ -728,6 +735,7 @@ def eval_rollout(
         returns[:, step + 1] = torch.as_tensor(returns[:, step] - (0 if disable_return_targets else reward))
 
         episode_return += reward
+        max_return = max(max_return, reward)
         episode_len += 1
 
         if ep_id < num_eps_with_logged_attention:
@@ -761,7 +769,7 @@ def eval_rollout(
 
     ant_path = states[0, :int(episode_len + 1)].cpu().numpy()
     return episode_return, episode_len, attention_map_frames, render_frames, pt_frames, plan_paths, ant_path, \
-        goal_unmodified
+        goal_unmodified, max_return
 
 
 @pyrallis.wrap()
@@ -789,7 +797,7 @@ def train(config: TrainConfig):
         eval_env = LerobotD4RLWrapper(
             gymnasium.make(
                 config.env_name,
-                obs_type= "environment_state_agent_pos" if "pusht" in config.env_name else "state",
+                obs_type="environment_state_agent_pos" if "pusht" in config.env_name else "state",
                 render_mode="rgb_array",
                 visualization_height=384,
                 visualization_width=384,
@@ -825,7 +833,7 @@ def train(config: TrainConfig):
         plan_disabled=config.plan_disabled,
         is_goal_conditioned=config.is_goal_conditioned,
         plans_use_actions=config.plans_use_actions,
-        plan_indices=config.plan_indices
+        plan_indices=config.plan_indices,
     )
 
     trainloader = DataLoader(
@@ -1038,7 +1046,7 @@ def train(config: TrainConfig):
                         set_seed(range(config.eval_episodes)[ep_id] * 2, eval_env, deterministic_torch=False)
 
                     os.makedirs(video_folder, exist_ok=True)
-                    eval_return, eval_len, attention_frames, render_frames, plan_frames, plan_paths, ant_path, goal = eval_rollout(
+                    eval_return, eval_len, attention_frames, render_frames, plan_frames, plan_paths, ant_path, goal, max_return = eval_rollout(
                         pdt_model=pdt_model,
                         env=eval_env,
                         target_return=target_return * config.reward_scale,
@@ -1053,6 +1061,9 @@ def train(config: TrainConfig):
                         state_noise_scale=config.state_noise_scale,
                         disable_return_targets=config.disable_return_targets
                     )
+                    # use max_reward IoU
+                    if 'pusht' in config.env_name:
+                        eval_return = max_return
 
                     if len(attention_frames):
                         arrays_to_video(attention_frames, f'{video_folder}/attention_t={step}-ep={ep_id}.mp4',
