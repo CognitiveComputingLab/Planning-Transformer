@@ -642,7 +642,11 @@ def eval_rollout(
     plan_paths = []
     goal_unmodified = env.get_target_goal(obs=states[0, 0].cpu())
     goal = torch.tensor(goal_unmodified, dtype=torch.float32, device=device).unsqueeze(0).unsqueeze(0)
-    max_return = -inf
+    alt_return = {
+        "max_return": -inf,
+        "final_return": 0
+    }
+
 
     if pdt_model.non_plan_downweighting < 0:
         pdt_model.downweight_non_plan(2 + pdt_model.goal_length, pdt_model.plan_length,
@@ -735,7 +739,8 @@ def eval_rollout(
         returns[:, step + 1] = torch.as_tensor(returns[:, step] - (0 if disable_return_targets else reward))
 
         episode_return += reward
-        max_return = max(max_return, reward)
+        alt_return["max_return"] = max(alt_return["max_return"], reward)
+        alt_return["final_return"] = reward
         episode_len += 1
 
         if ep_id < num_eps_with_logged_attention:
@@ -769,7 +774,7 @@ def eval_rollout(
 
     ant_path = states[0, :int(episode_len + 1)].cpu().numpy()
     return episode_return, episode_len, attention_map_frames, render_frames, pt_frames, plan_paths, ant_path, \
-        goal_unmodified, max_return
+        goal_unmodified, alt_return
 
 
 @pyrallis.wrap()
@@ -820,6 +825,11 @@ def train(config: TrainConfig):
             ref_max_score=4.,  # Assuming config has these attributes
             ref_min_score=0.
         )
+    elif 'BlockPush' in config.env_name:
+        from envs.block_pushing import block_pushing_multimodal
+
+    else:
+        eval_env = gym.make(config.env_name)
 
     # data & dataloader setup
     dataset = SequencePlanDataset(
@@ -1040,13 +1050,14 @@ def train(config: TrainConfig):
                 # if config.eval_seed != -1:
                 #     set_seed(config.eval_seed, eval_env, deterministic_torch=False)
                 eval_returns = []
+                eval_final_rewards = []
                 eval_goal_dists = []
                 for ep_id in trange(num_episodes, desc="Evaluation", leave=False):
                     if config.eval_seed == -1:
                         set_seed(range(config.eval_episodes)[ep_id] * 2, eval_env, deterministic_torch=False)
 
                     os.makedirs(video_folder, exist_ok=True)
-                    eval_return, eval_len, attention_frames, render_frames, plan_frames, plan_paths, ant_path, goal, max_return = eval_rollout(
+                    eval_return, eval_len, attention_frames, render_frames, plan_frames, plan_paths, ant_path, goal, alt_returns = eval_rollout(
                         pdt_model=pdt_model,
                         env=eval_env,
                         target_return=target_return * config.reward_scale,
@@ -1063,7 +1074,7 @@ def train(config: TrainConfig):
                     )
                     # use max_reward IoU
                     if 'pusht' in config.env_name:
-                        eval_return = max_return
+                        eval_return = alt_returns["max_return"]
 
                     if len(attention_frames):
                         arrays_to_video(attention_frames, f'{video_folder}/attention_t={step}-ep={ep_id}.mp4',
@@ -1076,6 +1087,7 @@ def train(config: TrainConfig):
                                         scale_factor=1, fps=1, use_grid=False)
                     # unscale for logging & correct normalized score computation
                     eval_returns.append(eval_return / config.reward_scale)
+                    eval_final_rewards.append(alt_returns["final_return"] / config.reward_scale)
 
                     eval_goal_dists.append(
                         np.linalg.norm(ant_path[-1, config.goal_indices] - np.array(goal)[list(config.goal_indices)])
@@ -1104,6 +1116,7 @@ def train(config: TrainConfig):
                 )
                 print(f"eval/{target_return}_return_mean", np.mean(eval_returns))
                 print(f"eval/{target_return}_normalized_score_mean", np.mean(normalized_scores))
+                print(f"eval/{target_return}_final_reward_mean", np.mean(eval_final_rewards))
                 if num_episodes == config.eval_episodes:
                     wandb.log(
                         {
@@ -1117,6 +1130,8 @@ def train(config: TrainConfig):
                             ),
                             f"eval/{target_return}_goal_dist_mean": np.mean(eval_goal_dists),
                             f"eval/{target_return}_goal_dist_std": np.std(eval_goal_dists),
+                            **({f"eval/{target_return}_final_reward_mean": np.mean(
+                                eval_final_rewards)} if 'pusht' in config.env_name else {})
                         },
                         step=step,
                     )

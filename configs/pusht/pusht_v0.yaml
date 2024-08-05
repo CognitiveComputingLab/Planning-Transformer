@@ -7,13 +7,13 @@ checkpoints_path: "./checkpoints/pusht/PDT-oracle"
 clip_grad: 0.25
 deterministic_torch: false
 device: cuda
-embedding_dim: 128
+embedding_dim: 64
 embedding_dropout: 0.05 #0.1
 env_name: "gym_pusht/PushT-v0"
 repo_id: "lerobot/pusht_keypoints"
 state_dim: 18
 episode_len: 300
-eval_episodes: 15 #15
+eval_episodes: 25 #15
 eval_every: 5000
 eval_seed: 43 #42 or -1 to seed every run the same
 group: "dt-pusht-PDT"
@@ -26,16 +26,16 @@ num_workers: 4
 project: "CORL"
 residual_dropout: 0.15 #0.1
 reward_scale: 1.0
-seq_len: 10
+seq_len: 20
 target_returns: [0.0]
 train_seed: 16 #10
-update_steps: 100000
+update_steps: 150000
 warmup_steps: 10000
 weight_decay: 0.0001
 log_attn_weights: 1
 log_attn_every: 250
 record_video: 1
-run_name: "run13"
+run_name: "run18"
 eval_offline_every: 5000
 bg_image: "pusht_bg.png"
 eval_path_plot_every: 2500

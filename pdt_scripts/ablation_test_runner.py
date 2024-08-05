@@ -9,17 +9,20 @@ import sys
 parameters = {
     "plan_sampling_method": [2, 1],
     # "plan_use_relative_states": [True, False],
-    "attention_dropout": [0.1, 0.15, 0.2],
-    "embedding_dropout": [0.1,0],
+    "attention_dropout": [0.1, 0.15, 0.2, 0.25],
+    "embedding_dropout": [0.05,0],
     # "plans_use_actions": [False, True],
     # "goal_representation": [1, 3, 4],
     # "plan_combine_observations": [True, False],
     "use_timestep_embedding": [True, False],
     "plan_max_trajectory_ratio": [0.5, 1.0],
     # "action_noise_scale": [0.0, 0.1, 0.2],
-    "plan_indices": [None, [0,1]],
-    "plan_use_relative_states": [False, True],
-
+    "plan_indices": [[0,1]],
+    "embedding_dim": [128,256,512],
+    "num_plan_points": [10,20],
+    "learning_rate": [0.0002, 0.0004],
+    "residual_dropout": [0.05, 0.1, 0.15, 0.2] #0.1
+    # "plan_use_relative_states": [False, True],
 }
 
 config_files = [
