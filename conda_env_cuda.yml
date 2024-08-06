@@ -9,6 +9,7 @@ dependencies:
   - python=3.10.12
   - numpy=1.26.2
   - tensorboard=2.5.0
+  - zarr
   - pip
   - pip:
     - gym==0.23.1

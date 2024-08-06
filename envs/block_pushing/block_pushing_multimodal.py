@@ -19,15 +19,16 @@ import collections
 import logging
 import math
 from typing import Dict, List, Optional, Union
+import copy
+import time
 
-import gin
 from gym import spaces
 from gym.envs import registration
 from envs.block_pushing import block_pushing
-from envs.utils import utils_pybullet
-from envs.utils.pose3d import Pose3d
-from envs.utils.utils_pybullet import ObjState
-from envs.utils.utils_pybullet import XarmState
+from envs.block_pushing.utils import utils_pybullet
+from envs.block_pushing.utils.pose3d import Pose3d
+from envs.block_pushing.utils.utils_pybullet import ObjState
+from envs.block_pushing.utils.utils_pybullet import XarmState
 import numpy as np
 from scipy.spatial import transform
 import pybullet
@@ -55,7 +56,6 @@ logging.basicConfig(
 logger = logging.getLogger()
 
 
-@gin.configurable
 def build_env_name(task, shared_memory, use_image_obs):
     """Construct the env name from parameters."""
     del task
@@ -72,7 +72,34 @@ def build_env_name(task, shared_memory, use_image_obs):
     return env_name
 
 
-@gin.configurable
+class BlockPushEventManager:
+    def __init__(self):
+        self.event_steps = {
+            'REACH_0': -1,
+            'REACH_1': -1,
+            'TARGET_0_0': -1,
+            'TARGET_0_1': -1,
+            'TARGET_1_0': -1,
+            'TARGET_1_1': -1
+        }
+    
+    def reach(self, step, block_id):
+        key = f'REACH_{block_id}'
+        if self.event_steps[key] < 0:
+            self.event_steps[key] = step
+    
+    def target(self, step, block_id, target_id):
+        key = f'TARGET_{block_id}_{target_id}'
+        if self.event_steps[key] < 0:
+            self.event_steps[key] = step
+
+    def reset(self):
+        for key in list(self.event_steps):
+            self.event_steps[key] = -1
+    
+    def get_info(self):
+        return copy.deepcopy(self.event_steps)
+
 class BlockPushMultimodal(block_pushing.BlockPush):
     """2 blocks, 2 targets."""
 
@@ -84,6 +111,7 @@ class BlockPushMultimodal(block_pushing.BlockPush):
         shared_memory=False,
         seed=None,
         goal_dist_tolerance=0.05,
+        abs_action=False
     ):
         """Creates an env instance.
 
@@ -100,6 +128,7 @@ class BlockPushMultimodal(block_pushing.BlockPush):
         """
         self._target_ids = None
         self._target_poses = None
+        self._event_manager = BlockPushEventManager()
         super(BlockPushMultimodal, self).__init__(
             control_frequency=control_frequency,
             task=task,
@@ -112,6 +141,7 @@ class BlockPushMultimodal(block_pushing.BlockPush):
         self._in_target = [[-1.0, -1.0], [-1.0, -1.0]]
         self._first_move = [-1, -1]
         self._step_num = 0
+        self._abs_action = abs_action
 
     @property
     def target_poses(self):
@@ -245,7 +275,7 @@ class BlockPushMultimodal(block_pushing.BlockPush):
 
         for _ in range(NUM_RESET_ATTEMPTS):
             # Choose the first target.
-            add = 0.12 * np.random.choice([-1, 1])
+            add = 0.12 * self._rng.choice([-1, 1])
             # Randomly flip the location of the targets.
             _reset_target_pose(0, add=add)
             _reset_target_pose(1, add=-add, avoid=self._target_poses[0].translation)
@@ -283,16 +313,17 @@ class BlockPushMultimodal(block_pushing.BlockPush):
             self._set_robot_target_effector_pose(starting_pose)
             self._reset_object_poses(workspace_center_x, workspace_center_y)
 
-        else:
-            self._target_poses = [
-                self._get_target_pose(idx) for idx in self._target_ids
-            ]
+        # else:
+        self._target_poses = [
+            self._get_target_pose(idx) for idx in self._target_ids
+        ]
 
         if reset_poses:
             self.step_simulation_to_stabilize()
 
         state = self._compute_state()
         self._previous_state = state
+        self._event_manager.reset()
         return state
 
     def _get_target_pose(self, idx):
@@ -334,7 +365,7 @@ class BlockPushMultimodal(block_pushing.BlockPush):
         block_poses = [_get_block_pose(i) for i in range(len(self._block_ids))]
 
         def _yaw_from_pose(pose):
-            return np.array([pose.rotation.as_euler("xyz", degrees=False)[-1]])
+            return np.array([pose.rotation.as_euler("xyz", degrees=False)[-1] % np.pi])
 
         obs = collections.OrderedDict(
             block_translation=block_poses[0].translation[0:2],
@@ -359,6 +390,7 @@ class BlockPushMultimodal(block_pushing.BlockPush):
                 if self._init_distance[i] != 100:
                     if np.abs(new_distance - self._init_distance[i]) > 1e-3:
                         logger.info(f"Block {i} moved on step {self._step_num}")
+                        self._event_manager.reach(step=self._step_num, block_id=i)
                         self._init_distance[i] = 100
 
         self._step_num += 1
@@ -375,7 +407,65 @@ class BlockPushMultimodal(block_pushing.BlockPush):
         if reward >= 0.5:
             # Terminate the episode if both blocks are close enough to the targets.
             done = True
-        return state, reward, done, {}
+
+        info = self._event_manager.get_info()
+        return state, reward, done, info
+    
+    def _step_robot_and_sim(self, action):
+        """Steps the robot and pybullet sim."""
+        # Compute target_effector_pose by shifting the effector's pose by the
+        # action.
+        if self._abs_action:
+            target_effector_translation = np.array([action[0], action[1], 0])
+        else:
+            target_effector_translation = np.array(
+                self._target_effector_pose.translation
+            ) + np.array([action[0], action[1], 0])
+
+        target_effector_translation[0:2] = np.clip(
+            target_effector_translation[0:2],
+            self.workspace_bounds[0],
+            self.workspace_bounds[1],
+        )
+        target_effector_translation[-1] = self.effector_height
+        target_effector_pose = Pose3d(
+            rotation=block_pushing.EFFECTOR_DOWN_ROTATION, translation=target_effector_translation
+        )
+
+        self._set_robot_target_effector_pose(target_effector_pose)
+
+        # Update sleep time dynamically to stay near real-time.
+        frame_sleep_time = 0
+        if self._connection_mode == pybullet.SHARED_MEMORY:
+            cur_time = time.time()
+            if self._last_loop_time is not None:
+                # Calculate the total, non-sleeping time from the previous frame, this
+                # includes the actual step as well as any compute that happens in the
+                # caller thread (model inference, etc).
+                compute_time = (
+                    cur_time
+                    - self._last_loop_time
+                    - self._last_loop_frame_sleep_time * self._sim_steps_per_step
+                )
+                # Use this to calculate the current frame's total sleep time to ensure
+                # that env.step runs at policy rate. This is an estimate since the
+                # previous frame's compute time may not match the current frame.
+                total_sleep_time = max((1 / self._control_frequency) - compute_time, 0)
+                # Now spread this out over the inner sim steps. This doesn't change
+                # control in any way, but makes the animation appear smooth.
+                frame_sleep_time = total_sleep_time / self._sim_steps_per_step
+            else:
+                # No estimate of the previous frame's compute, assume it is zero.
+                frame_sleep_time = 1 / self._step_frequency
+
+            # Cache end of this loop time, to compute sleep time on next iteration.
+            self._last_loop_time = cur_time
+            self._last_loop_frame_sleep_time = frame_sleep_time
+
+        for _ in range(self._sim_steps_per_step):
+            if self._connection_mode == pybullet.SHARED_MEMORY:
+                block_pushing.sleep_spin(frame_sleep_time)
+            self._pybullet_client.stepSimulation()
 
     def _get_reward(self, state):
         # Reward is 1. if both blocks are inside targets, but not the same target.
@@ -409,6 +499,7 @@ class BlockPushMultimodal(block_pushing.BlockPush):
                         logger.info(
                             f"Block {b_i} entered target {t_i} on step {self._step_num}"
                         )
+                        self._event_manager.target(step=self._step_num, block_id=b_i, target_id=t_i)
                         reward += 0.49
 
         b0_closest_target, b0_in_target = _closest_target("block")
@@ -524,7 +615,7 @@ class BlockPushMultimodal(block_pushing.BlockPush):
 
         WARNING: py_environment wrapper assumes environments aren't reset in their
         constructor and will often reset the environment unintentionally. It is
-        always recommeneded that you call env.reset on the tfagents wrapper before
+        always recommended that you call env.reset on the tfagents wrapper before
         playback (replaying pybullet_state).
 
         Args:
@@ -608,7 +699,7 @@ class BlockPushHorizontalMultimodal(BlockPushMultimodal):
         # Reject targets too close to `avoid`.
         for _ in range(NUM_RESET_ATTEMPTS):
             # Reset first block.
-            add = 0.2 * np.random.choice([-1, 1])
+            add = 0.2 * self._rng.choice([-1, 1])
             b0_translation = _reset_block_pose(0, add=add)
             # Reset second block away from first block.
             b1_translation = _reset_block_pose(1, add=-add, avoid=b0_translation)
@@ -668,7 +759,7 @@ class BlockPushHorizontalMultimodal(BlockPushMultimodal):
 
         for _ in range(NUM_RESET_ATTEMPTS):
             # Choose the first target.
-            add = 0.2 * np.random.choice([-1, 1])
+            add = 0.2 * self._rng.choice([-1, 1])
             # Randomly flip the location of the targets.
             _reset_target_pose(0, add=add)
             _reset_target_pose(1, add=-add, avoid=self._target_poses[0].translation)

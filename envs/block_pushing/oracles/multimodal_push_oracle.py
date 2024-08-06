@@ -14,9 +14,7 @@
 # limitations under the License.
 
 """Oracle for multimodal pushing task."""
-import random
-
-import envs.block_pushing.oracles.oriented_push_oracle as oriented_push_oracle_module
+import diffusion_policy.env.block_pushing.oracles.oriented_push_oracle as oriented_push_oracle_module
 import numpy as np
 from tf_agents.trajectories import policy_step
 from tf_agents.trajectories import time_step as ts
@@ -144,7 +142,10 @@ class MultimodalOrientedPushOracle(oriented_push_oracle_module.OrientedPushOracl
             (("block2", "target"), ("block", "target2")),
             (("block2", "target2"), ("block", "target")),
         ]
-        return random.choice(possible_orders)
+        # import pdb; pdb.set_trace()
+        # result = random.choice(possible_orders)
+        result = possible_orders[self._env._rng.choice(len(possible_orders))]
+        return result
 
     def _action(self, time_step, policy_state):
         if time_step.is_first():

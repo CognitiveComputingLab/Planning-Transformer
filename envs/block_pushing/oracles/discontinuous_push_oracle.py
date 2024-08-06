@@ -15,7 +15,7 @@
 
 """Pushes to first target, waits, then pushes to second target."""
 
-import envs.block_pushing.oracles.oriented_push_oracle as oriented_push_oracle_module
+import diffusion_policy.env.block_pushing.oracles.oriented_push_oracle as oriented_push_oracle_module
 import numpy as np
 from tf_agents.trajectories import policy_step
 from tf_agents.trajectories import time_step as ts

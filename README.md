@@ -20,6 +20,7 @@ Codebase for the Planning-Transformer advanced project.
    6. Download `calvin.gz` (dataset) following the instructions at https://github.com/clvrai/skimo and place it in the `envs` directory.
    7. Convert `install.sh` to a unix file with `sudo apt-get install dos2unix && dos2unix install.sh`
    8. `cd envs/calvin && bash install.sh`
+9. (optional) install block_pushing, by following instructions at https://github.com/real-stanford/diffusion_policy?tab=readme-ov-file#%EF%B8%8F-reproducing-simulation-benchmark-results
 
 If using cuda run the following :
  1. pip3 uninstall torch torchvision -y && pip3 install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118

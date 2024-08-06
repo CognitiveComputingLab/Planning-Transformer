@@ -14,8 +14,8 @@
 # limitations under the License.
 
 """XArm Robot Kinematics."""
-from envs.utils import utils_pybullet
-from envs.utils.pose3d import Pose3d
+from envs.block_pushing.utils import utils_pybullet
+from envs.block_pushing.utils.pose3d import Pose3d
 import numpy as np
 from scipy.spatial import transform
 import pybullet
@@ -23,7 +23,6 @@ import pybullet
 XARM_URDF_PATH = (
     "third_party/bullet/examples/pybullet/gym/pybullet_data/" "xarm/xarm6_robot.urdf"
 )
-XARM_WHITE_URDF_PATH = "third_party/robotics/models/xarm/" "xarm6_robot_white.urdf"
 SUCTION_URDF_PATH = "third_party/py/envs/assets/suction/" "suction-head-long.urdf"
 CYLINDER_URDF_PATH = "third_party/py/envs/assets/suction/" "cylinder.urdf"
 CYLINDER_REAL_URDF_PATH = "third_party/py/envs/assets/suction/" "cylinder_real.urdf"
@@ -46,10 +45,6 @@ class XArmSimRobot:
         if color == "default":
             self.xarm = utils_pybullet.load_urdf(
                 pybullet_client, XARM_URDF_PATH, [0, 0, 0]
-            )
-        elif color == "white":
-            self.xarm = utils_pybullet.load_urdf(
-                pybullet_client, XARM_WHITE_URDF_PATH, [0, 0, 0]
             )
         else:
             raise ValueError("Unrecognized xarm color %s" % color)

@@ -21,15 +21,14 @@ import math
 import time
 from typing import Dict, List, Optional, Tuple, Union
 
-import gin
 import gym
 from gym import spaces
 from gym.envs import registration
-from envs.utils import utils_pybullet
-from envs.utils import xarm_sim_robot
-from envs.utils.pose3d import Pose3d
-from envs.utils.utils_pybullet import ObjState
-from envs.utils.utils_pybullet import XarmState
+from envs.block_pushing.utils import utils_pybullet
+from envs.block_pushing.utils import xarm_sim_robot
+from envs.block_pushing.utils.pose3d import Pose3d
+from envs.block_pushing.utils.utils_pybullet import ObjState
+from envs.block_pushing.utils.utils_pybullet import XarmState
 import numpy as np
 from scipy.spatial import transform
 import pybullet
@@ -142,7 +141,6 @@ CAMERA_INTRINSICS_REAL = (
 # pylint: enable=line-too-long
 
 
-@gin.configurable
 def build_env_name(task, shared_memory, use_image_obs, use_normalized_env=False):
     """Construct the env name from parameters."""
     if isinstance(task, str):
@@ -161,7 +159,6 @@ def build_env_name(task, shared_memory, use_image_obs, use_normalized_env=False)
     return env_name
 
 
-@gin.constants_from_enum
 class BlockTaskVariant(enum.Enum):
     REACH = "Reach"
     REACH_NORMALIZED = "ReachNormalized"
@@ -179,7 +176,6 @@ def sleep_spin(sleep_time_sec):
         pass
 
 
-@gin.configurable
 class BlockPush(gym.Env):
     """Simple XArm environment for block pushing."""
 
@@ -193,6 +189,7 @@ class BlockPush(gym.Env):
         goal_dist_tolerance=0.01,
         effector_height=None,
         visuals_mode="default",
+        abs_action=False
     ):
         """Creates an env instance.
 
@@ -275,6 +272,7 @@ class BlockPush(gym.Env):
         self._sim_steps_per_step = int(self._step_frequency / self._control_frequency)
 
         self.rendered_img = None
+        self._abs_action = abs_action
 
         # Use saved_state and restore to make reset safe as no simulation state has
         # been updated at this state, but the assets are now loaded.
@@ -511,9 +509,12 @@ class BlockPush(gym.Env):
         """Steps the robot and pybullet sim."""
         # Compute target_effector_pose by shifting the effector's pose by the
         # action.
-        target_effector_translation = np.array(
-            self._target_effector_pose.translation
-        ) + np.array([action[0], action[1], 0])
+        if self._abs_action:
+            target_effector_translation = np.array([action[0], action[1], 0])
+        else:
+            target_effector_translation = np.array(
+                self._target_effector_pose.translation
+            ) + np.array([action[0], action[1], 0])
 
         target_effector_translation[0:2] = np.clip(
             target_effector_translation[0:2],
@@ -744,7 +745,7 @@ class BlockPush(gym.Env):
 
         WARNING: py_environment wrapper assumes environments aren't reset in their
         constructor and will often reset the environment unintentionally. It is
-        always recommeneded that you call env.reset on the tfagents wrapper before
+        always recommended that you call env.reset on the tfagents wrapper before
         playback (replaying pybullet_state).
 
         Args:

@@ -19,12 +19,11 @@ import enum
 import math
 from typing import List, Optional
 
-import gin
 from gym import spaces
 from gym.envs import registration
 from envs.block_pushing import block_pushing
-from envs.utils import utils_pybullet
-from envs.utils.pose3d import Pose3d
+from envs.block_pushing.utils import utils_pybullet
+from envs.block_pushing.utils.pose3d import Pose3d
 import numpy as np
 from scipy.spatial import transform
 import pybullet
@@ -36,7 +35,6 @@ MIN_TARGET_DIST = 0.15
 NUM_RESET_ATTEMPTS = 1000
 
 
-@gin.configurable
 def build_env_name(task, shared_memory, use_image_obs):
     """Construct the env name from parameters."""
     del task
@@ -53,7 +51,6 @@ def build_env_name(task, shared_memory, use_image_obs):
     return env_name
 
 
-@gin.constants_from_enum
 class BlockTaskVariant(enum.Enum):
     REACH = "Reach"
     REACH_NORMALIZED = "ReachNormalized"

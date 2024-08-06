@@ -24,6 +24,7 @@ from d4rl.kitchen import kitchen_envs
 from utils.make_d4rl_env import *
 import gymnasium
 import gym_pusht
+from collections import OrderedDict
 
 from mujoco_py import GlfwContext
 
@@ -116,6 +117,7 @@ class TrainConfig:
     run_name: str = "run_0"
     bg_image: str = None
     num_eval_videos: int = 3
+    num_eps_with_logged_attention: int = 0
 
     # ablation testing parameters main
     plan_sampling_method: Optional[int] = 4  # 1: fixed-time", 2: fixed-distance", 3: log-time", 4: log-distance
@@ -235,8 +237,11 @@ class MakeGoalEnv(gym.Wrapper):
 
 def obs_dict_to_vec(obs):
     if type(obs) is dict:
-        # for handelling push-t's observation which returns a tuple
+        # for explicitly handling push-t's observation which returns a tuple
         return np.concatenate((obs['agent_pos'], obs['environment_state']))
+    elif type(obs) is OrderedDict:
+        return np.concatenate(list(obs.values()), axis=-1)
+        # return np.hstack([np.asarray(v).flatten() for v in obs.values()])
     else:
         return obs
 
@@ -491,6 +496,7 @@ class PlanningDecisionTransformer(DecisionTransformer):
 
     def forward(self, goal, states, actions, returns_to_go, time_steps, plan, padding_mask=None,
                 log_attention=False):
+
         batch_size, seq_len = states.shape[0], states.shape[1]
         device = states.device
         # [batch_size, seq_len, emb_dim]
@@ -618,8 +624,8 @@ def eval_rollout(
         record_video: bool = False,
         early_stop_step: int = inf,
         action_noise_scale: float = 0.7,
-        state_noise_scale: float = 0.1,
-        num_eps_with_logged_attention: int = 0,
+        state_noise_scale: float = 0.0,
+        num_eps_with_logged_attention: int = 3,
         is_goal_conditioned: bool = False,
         disable_return_targets: bool = False
 ) -> Tuple[float, float, list, list, list, list, np.ndarray, tuple, float]:
@@ -642,6 +648,7 @@ def eval_rollout(
     plan_paths = []
     goal_unmodified = env.get_target_goal(obs=states[0, 0].cpu())
     goal = torch.tensor(goal_unmodified, dtype=torch.float32, device=device).unsqueeze(0).unsqueeze(0)
+
     alt_return = {
         "max_return": -inf,
         "final_return": 0
@@ -731,6 +738,10 @@ def eval_rollout(
             action_noise = 0
 
         next_state, reward, done, info = env.step(predicted_action + action_noise)
+        # print("states", next_state[0, 8:10])
+        # print("actions", predicted_action)
+        # print("timesteps",  time_steps[:, : step + 1][:, -pdt_model.seq_len:])
+        # print("plan", plan)
         # next_state, reward, done, info = env.step(predicted_action)
 
         actions[:, step] = torch.as_tensor(predicted_action + action_noise)
@@ -828,6 +839,13 @@ def train(config: TrainConfig):
     elif 'BlockPush' in config.env_name:
         from envs.block_pushing import block_pushing_multimodal
 
+        eval_env = BlockPushD4RLWrapper(
+            gym.make("BlockPushMultimodal-v0", abs_action=False),
+            data_path='data/block_pushing/block_pushing/multimodal_push_seed.zarr',
+            ref_max_score=100.,
+            ref_min_score=0.
+        )
+
     else:
         eval_env = gym.make(config.env_name)
 
@@ -860,6 +878,7 @@ def train(config: TrainConfig):
             pos_mean=dataset.state_mean[0, config.ant_path_viz_indices],
             pos_std=dataset.state_std[0, config.ant_path_viz_indices],
         ))
+
     # evaluation environment with state & reward preprocessing (as in dataset above)
     eval_env = wrap_goal_env(
         env=eval_env,
@@ -936,6 +955,8 @@ def train(config: TrainConfig):
         #     first_batch = batch
         # if step % config.eval_offline_every == 0:
         #     batch = first_batch
+
+
         goal, states, actions, returns, time_steps, mask, plan, states_till_end, steps_left, return_weight = \
             [b.to(config.device) for b in batch]
 
@@ -951,6 +972,9 @@ def train(config: TrainConfig):
         # every other gradient update step, corrupt states with empty 0s, to help focus on plans
         # if step % 2== 0:
         #     states[:, 1:] = torch.zeros(size=states.shape, dtype=torch.float32, device=states.device)[:, 1:]
+
+        # print("timesteps", time_steps[0])
+        # print("plan", plan[0])
 
         # Forward pass through the model with planning tokens
         predicted_plan, predicted_actions, attention_maps = pdt_model(
@@ -1070,7 +1094,8 @@ def train(config: TrainConfig):
                         early_stop_step=config.eval_early_stop_step,
                         action_noise_scale=config.action_noise_scale,
                         state_noise_scale=config.state_noise_scale,
-                        disable_return_targets=config.disable_return_targets
+                        disable_return_targets=config.disable_return_targets,
+                        num_eps_with_logged_attention=config.num_eps_with_logged_attention
                     )
                     # use max_reward IoU
                     if 'pusht' in config.env_name:

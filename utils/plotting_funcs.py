@@ -169,7 +169,7 @@ def prepare_plot(image_path, pos_mean, pos_std):
         tl, br = normalise_coords([[-0.5, -0.5], [-0.5, 0.5]], pos_mean, pos_std)
 
     # Load the background image
-    if image_path is not None:
+    if not image_path in [None,""]:
         bg_image = plt.imread('./visualisations/bg_images/'+image_path)
         ax.imshow(bg_image, extent=(tl[0], br[0], tl[1], br[1]))
 

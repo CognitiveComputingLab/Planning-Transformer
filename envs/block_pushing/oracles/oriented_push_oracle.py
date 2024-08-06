@@ -15,7 +15,7 @@
 
 """Oracle for pushing task which orients the block then pushes it."""
 
-import envs.block_pushing.oracles.pushing_info as pushing_info_module
+import diffusion_policy.env.block_pushing.oracles.pushing_info as pushing_info_module
 import numpy as np
 from tf_agents.policies import py_policy
 from tf_agents.trajectories import policy_step
