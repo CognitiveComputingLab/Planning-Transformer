@@ -22,6 +22,7 @@ from tqdm.auto import trange
 
 import wandb
 from utils.plotting_funcs import log_attention_maps
+from sklearn.model_selection import train_test_split
 
 
 @dataclass
@@ -173,9 +174,8 @@ def discounted_cumsum(x: np.ndarray, gamma: float) -> np.ndarray:
     return cumsum
 
 
-def load_d4rl_trajectories(
-        env: OfflineEnv, gamma: float = 1.0
-) -> Tuple[List[DefaultDict[str, np.ndarray]], Dict[str, Any]]:
+def load_d4rl_trajectories(env: OfflineEnv, gamma: float = 1.0, test_size: float = 0.02
+) -> Tuple[Dict[str, Any], Dict[str, Any]]:
     dataset = env.get_dataset()
     traj, traj_len = [], []
 
@@ -198,23 +198,31 @@ def load_d4rl_trajectories(
             # reset trajectory buffer
             data_ = defaultdict(list)
 
-    # needed for normalization, weighted sampling, other stats can be added also
-    info = {
-        "obs_mean": dataset["observations"].mean(0, keepdims=True),
-        "obs_std": dataset["observations"].std(0, keepdims=True) + 1e-6,
-        "traj_lens": np.array(traj_len),
-    }
-    return traj, info
+    train_traj, test_traj = train_test_split(traj, test_size=test_size, random_state=42)
+    train_obs = np.concatenate([t["observations"] for t in train_traj], axis=0)
+    obs_mean, obs_std = train_obs.mean(0, keepdims=True), train_obs.std(0, keepdims=True) + 1e-6
+
+    def get_info(traj_list):
+        return {
+            "obs_mean": obs_mean,
+            "obs_std": obs_std,
+            "traj_lens": np.array([len(t["actions"]) for t in traj_list]),
+        }
+
+    return {"trajectories": train_traj, "info": get_info(train_traj)}, {"trajectories": test_traj,
+                                                                        "info": get_info(test_traj)}
 
 
 class SequenceDataset(IterableDataset):
-    def __init__(self, env: OfflineEnv, seq_len: int = 10, reward_scale: float = 1.0):
-        self.dataset, self.info = load_d4rl_trajectories(env, gamma=1.0)
+    def __init__(self, dataset, ds_info, seq_len: int = 10, reward_scale: float = 1.0):
+        self.info = ds_info
+        self.dataset = dataset
         self.reward_scale = reward_scale
         self.seq_len = seq_len
 
         self.state_mean = self.info["obs_mean"]
         self.state_std = self.info["obs_std"]
+
         # https://github.com/kzl/decision-transformer/blob/e2d82e68f330c00f763507b3b01d774740bee53f/gym/experiment.py#L116 # noqa
         self.sample_prob = self.info["traj_lens"] / self.info["traj_lens"].sum()
 

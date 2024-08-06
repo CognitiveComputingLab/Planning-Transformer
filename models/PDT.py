@@ -263,11 +263,11 @@ def wrap_goal_env(
 
 
 class SequencePlanDataset(SequenceDataset):
-    def __init__(self, env: OfflineEnv, seq_len: int = 10, reward_scale: float = 1.0, path_length=10,
+    def __init__(self, dataset, ds_info, seq_len: int = 10, reward_scale: float = 1.0, path_length=10,
                  embedding_dim: int = 128, plan_sampling_method: int = 4, plan_max_trajectory_ratio=0.5,
                  plan_combine: bool = False, plan_disabled: bool = False, plan_indices: Tuple[int, ...] = (0, 1),
                  is_goal_conditioned: bool = False, plans_use_actions: bool = False):
-        super().__init__(env, seq_len, reward_scale)
+        super().__init__(dataset, ds_info, seq_len, reward_scale)
         self.path_length = path_length
         self.plan_indices = range(0, self.state_mean.shape[1]) if plan_indices is None else plan_indices
         self.plans_use_actions = plans_use_actions
@@ -654,7 +654,6 @@ def eval_rollout(
         "final_return": 0
     }
 
-
     if pdt_model.non_plan_downweighting < 0:
         pdt_model.downweight_non_plan(2 + pdt_model.goal_length, pdt_model.plan_length,
                                       pdt_model.non_plan_downweighting)
@@ -787,7 +786,6 @@ def eval_rollout(
     return episode_return, episode_len, attention_map_frames, render_frames, pt_frames, plan_paths, ant_path, \
         goal_unmodified, alt_return
 
-
 @pyrallis.wrap()
 def train(config: TrainConfig):
     num_cores = os.sysconf("SC_NPROCESSORS_ONLN")
@@ -849,28 +847,27 @@ def train(config: TrainConfig):
     else:
         eval_env = gym.make(config.env_name)
 
-    # data & dataloader setup
-    dataset = SequencePlanDataset(
-        eval_env,
-        seq_len=config.seq_len,
-        reward_scale=config.reward_scale,
-        path_length=config.num_plan_points,
-        embedding_dim=config.embedding_dim,
-        plan_sampling_method=config.plan_sampling_method,
-        plan_combine=config.plan_combine_observations,
-        plan_disabled=config.plan_disabled,
-        is_goal_conditioned=config.is_goal_conditioned,
-        plans_use_actions=config.plans_use_actions,
-        plan_indices=config.plan_indices,
-    )
+    train_data, val_data = load_d4rl_trajectories(eval_env, gamma=1.0, test_size=0.02)
+    def make_sequence_dataset(dataset, info):
+        return SequencePlanDataset(
+            dataset,
+            info,
+            seq_len=config.seq_len,
+            reward_scale=config.reward_scale,
+            path_length=config.num_plan_points,
+            embedding_dim=config.embedding_dim,
+            plan_sampling_method=config.plan_sampling_method,
+            plan_combine=config.plan_combine_observations,
+            plan_disabled=config.plan_disabled,
+            is_goal_conditioned=config.is_goal_conditioned,
+            plans_use_actions=config.plans_use_actions,
+            plan_indices=config.plan_indices,
+        )
+    dataset = make_sequence_dataset(train_data["trajectories"], train_data["info"])
+    val_dataset = make_sequence_dataset(val_data["trajectories"], val_data["info"])
+    trainloader = DataLoader(dataset, batch_size=config.batch_size, pin_memory=True, num_workers=num_cores, timeout=10)
+    valloader = DataLoader(val_dataset, batch_size=config.batch_size, pin_memory=True, num_workers=num_cores, timeout=10)
 
-    trainloader = DataLoader(
-        dataset,
-        batch_size=config.batch_size,
-        pin_memory=True,
-        num_workers=num_cores,
-        timeout=10  # Set a timeout to catch hanging issues
-    )
     goal_target = None
     if config.demo_mode:
         goal_target = np.array(demo_goal_select(
@@ -945,117 +942,122 @@ def train(config: TrainConfig):
 
     print(f"Total parameters (DT): {sum(p.numel() for p in pdt_model.parameters())}")
     trainloader_iter = iter(trainloader)
+    valloader_iter = iter(valloader)
     # first_batch = None
 
     for step in trange(step_start, config.update_steps + step_start, desc="Training"):
-        # print(f"step {step} in train loop")
-        batch = next(trainloader_iter)
+        for is_val in [0,1] if step % 8 ==0 else [0]:
+            if is_val: pdt_model.eval()
+            # print(f"step {step} in train loop")
+            batch = next(valloader_iter if is_val else trainloader_iter)
 
-        # if step == step_start:
-        #     first_batch = batch
-        # if step % config.eval_offline_every == 0:
-        #     batch = first_batch
+            # if step == step_start:
+            #     first_batch = batch
+            # if step % config.eval_offline_every == 0:
+            #     batch = first_batch
 
+            goal, states, actions, returns, time_steps, mask, plan, states_till_end, steps_left, return_weight = \
+                [b.to(config.device) for b in batch]
 
-        goal, states, actions, returns, time_steps, mask, plan, states_till_end, steps_left, return_weight = \
-            [b.to(config.device) for b in batch]
+            # True value indicates that the corresponding key value will be ignored
+            padding_mask = ~mask.to(torch.bool)
 
-        # True value indicates that the corresponding key value will be ignored
-        padding_mask = ~mask.to(torch.bool)
+            # increase focus on plan by corrupting states/actions during first 10k steps
+            # if step / config.update_steps < 0.1:
+            #     states[:, 1:] = torch.zeros(size=states.shape, dtype=torch.float32, device=states.device)[:, 1:]
+            # actions_input = torch.zeros(size=actions.shape, dtype=torch.float32,
+            #                             device=states.device) if step / config.update_steps < 0.1 else actions
 
-        # increase focus on plan by corrupting states/actions during first 10k steps
-        # if step / config.update_steps < 0.1:
-        #     states[:, 1:] = torch.zeros(size=states.shape, dtype=torch.float32, device=states.device)[:, 1:]
-        # actions_input = torch.zeros(size=actions.shape, dtype=torch.float32,
-        #                             device=states.device) if step / config.update_steps < 0.1 else actions
+            # every other gradient update step, corrupt states with empty 0s, to help focus on plans
+            # if step % 2== 0:
+            #     states[:, 1:] = torch.zeros(size=states.shape, dtype=torch.float32, device=states.device)[:, 1:]
 
-        # every other gradient update step, corrupt states with empty 0s, to help focus on plans
-        # if step % 2== 0:
-        #     states[:, 1:] = torch.zeros(size=states.shape, dtype=torch.float32, device=states.device)[:, 1:]
+            # print("timesteps", time_steps[0])
+            # print("plan", plan[0])
 
-        # print("timesteps", time_steps[0])
-        # print("plan", plan[0])
+            # Forward pass through the model with planning tokens
+            predicted_plan, predicted_actions, attention_maps = pdt_model(
+                goal=goal,
+                states=states,
+                actions=actions,
+                returns_to_go=returns,
+                time_steps=time_steps,
+                plan=plan,  # Include planning tokens in the model's forward pass
+                padding_mask=padding_mask,
+                log_attention=False,
+            )
 
-        # Forward pass through the model with planning tokens
-        predicted_plan, predicted_actions, attention_maps = pdt_model(
-            goal=goal,
-            states=states,
-            actions=actions,
-            returns_to_go=returns,
-            time_steps=time_steps,
-            plan=plan,  # Include planning tokens in the model's forward pass
-            padding_mask=padding_mask,
-            log_attention=False,
-        )
+            # simple advantage weighting to encourage high return behaviour to be learnt
+            return_weight = return_weight[:, np.newaxis, np.newaxis] if config.use_return_weighting else 1.0
 
-        # simple advantage weighting to encourage high return behaviour to be learnt
-        return_weight = return_weight[:, np.newaxis, np.newaxis] if config.use_return_weighting else 1.0
+            plan_loss = F.mse_loss(predicted_plan, plan.detach(), reduction="none")
+            plan_loss = (plan_loss * return_weight).mean()
+            action_loss = F.mse_loss(predicted_actions, actions.detach(), reduction="none")
+            action_loss = (action_loss * mask.unsqueeze(-1) * return_weight).mean()
+            combined_loss = 0.5 * action_loss + 0.5 * plan_loss if dataset.plan_length else action_loss
+            # t = step / config.update_steps
+            # combined_loss = t * action_loss + (1 - t) * plan_loss if dataset.plan_length else action_loss
+            # if step/config.update_steps <0.1:
+            #     combined_loss = plan_loss if dataset.plan_length else action_loss
+            # else:
+            #     combined_loss = 0.5 * action_loss + 0.5 * plan_loss if dataset.plan_length else action_loss
+            # Backpropagation and optimization for main model
 
-        plan_loss = F.mse_loss(predicted_plan, plan.detach(), reduction="none")
-        plan_loss = (plan_loss * return_weight).mean()
-        action_loss = F.mse_loss(predicted_actions, actions.detach(), reduction="none")
-        action_loss = (action_loss * mask.unsqueeze(-1) * return_weight).mean()
-        combined_loss = 0.5 * action_loss + 0.5 * plan_loss if dataset.plan_length else action_loss
-        # t = step / config.update_steps
-        # combined_loss = t * action_loss + (1 - t) * plan_loss if dataset.plan_length else action_loss
-        # if step/config.update_steps <0.1:
-        #     combined_loss = plan_loss if dataset.plan_length else action_loss
-        # else:
-        #     combined_loss = 0.5 * action_loss + 0.5 * plan_loss if dataset.plan_length else action_loss
-        # Backpropagation and optimization for main model
+            optim.zero_grad()
+            if not config.demo_mode and not is_val:
+                if not step % config.eval_offline_every == 0:
+                    combined_loss.backward()
 
-        optim.zero_grad()
-        if not config.demo_mode:
-            if not step % config.eval_offline_every == 0:
-                combined_loss.backward()
+                if config.clip_grad is not None:
+                    torch.nn.utils.clip_grad_norm_(pdt_model.parameters(), config.clip_grad)
+                optim.step()
+                scheduler.step()
+            #
+            # # Log gradients
+            # for name, param in pdt_model.named_parameters():
+            #     if 'state_emb' in name and param.grad is not None:
+            #         wandb.log({f"gradients_after/{name}": wandb.Histogram(param.grad.cpu().data.numpy())})
 
-            if config.clip_grad is not None:
-                torch.nn.utils.clip_grad_norm_(pdt_model.parameters(), config.clip_grad)
-            optim.step()
-            scheduler.step()
-        #
-        # # Log gradients
-        # for name, param in pdt_model.named_parameters():
-        #     if 'state_emb' in name and param.grad is not None:
-        #         wandb.log({f"gradients_after/{name}": wandb.Histogram(param.grad.cpu().data.numpy())})
+            # print("train_loss", main_loss.item())
 
-        # print("train_loss", main_loss.item())
+            if step % config.eval_offline_every == 0 and not config.demo_mode and not is_val:
+                if len(config.ant_path_viz_indices) >= 2:
+                    for batch_index in random.sample(range(config.batch_size), 10):
+                        paths = []
+                        if dataset.plan_length:
+                            # select batch_index of the batch and first of the plan sequence
+                            for i, plan_instance in enumerate([predicted_plan, plan]):
+                                plan_instance = plan_instance[batch_index].detach().cpu()
+                                paths.append(dataset.convert_plan_to_path(plan_instance, config.plan_path_viz_indices))
 
-        if step % config.eval_offline_every == 0 and not config.demo_mode:
-            if len(config.ant_path_viz_indices) >= 2:
-                for batch_index in random.sample(range(config.batch_size), 10):
-                    paths = []
-                    if dataset.plan_length:
-                        # select batch_index of the batch and first of the plan sequence
-                        for i, plan_instance in enumerate([predicted_plan, plan]):
-                            plan_instance = plan_instance[batch_index].detach().cpu()
-                            paths.append(dataset.convert_plan_to_path(plan_instance, config.plan_path_viz_indices))
+                        # for all variables we use the first of the batch
+                        plot_and_log_paths(
+                            image_path=config.bg_image,
+                            start=states[batch_index, 0, config.ant_path_viz_indices].cpu(),
+                            goal=goal[batch_index, 0].cpu()[
+                                np.array(config.path_viz_indices)] if config.is_goal_conditioned else None,
+                            plan_paths=paths,
+                            ant_path=states_till_end[batch_index, :steps_left[batch_index],
+                                     config.ant_path_viz_indices].cpu(),
+                            output_folder=f'./visualisations/PDTv2-oracle-plan/{config.env_name}/{config.run_name}/train',
+                            index=f"step={step}-batch_idx={batch_index}",
+                            log_to_wandb=False,
+                            pos_mean=dataset.state_mean[0, config.ant_path_viz_indices],
+                            pos_std=dataset.state_std[0, config.ant_path_viz_indices]
+                        )
 
-                    # for all variables we use the first of the batch
-                    plot_and_log_paths(
-                        image_path=config.bg_image,
-                        start=states[batch_index, 0, config.ant_path_viz_indices].cpu(),
-                        goal=goal[batch_index, 0].cpu()[
-                            np.array(config.path_viz_indices)] if config.is_goal_conditioned else None,
-                        plan_paths=paths,
-                        ant_path=states_till_end[batch_index, :steps_left[batch_index],
-                                 config.ant_path_viz_indices].cpu(),
-                        output_folder=f'./visualisations/PDTv2-oracle-plan/{config.env_name}/{config.run_name}/train',
-                        index=f"step={step}-batch_idx={batch_index}",
-                        log_to_wandb=False,
-                        pos_mean=dataset.state_mean[0, config.ant_path_viz_indices],
-                        pos_std=dataset.state_std[0, config.ant_path_viz_indices]
-                    )
+            train_or_val = "val" if is_val else "train"
+            wandb.log(
+                {
+                    f"{train_or_val}_action_loss": action_loss.item(),
+                    f"{train_or_val}_plan_loss": plan_loss.item(),
+                    f"{train_or_val}_combined_loss": combined_loss.item(),
+                    **({"learning_rate": scheduler.get_last_lr()[0]} if not is_val else {})
+                },
+                step=step,
+            )
 
-        wandb.log(
-            {
-                "train_action_loss": action_loss.item(),
-                "train_plan_loss": plan_loss.item(),
-                "train_combined_loss": combined_loss.item(),
-                "learning_rate": scheduler.get_last_lr()[0],
-            },
-            step=step,
-        )
+            if is_val: pdt_model.train()
 
         # validation in the env for the actual online performance
         if step == 0 and not config.demo_mode: continue

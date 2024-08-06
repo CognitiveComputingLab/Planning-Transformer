@@ -1,5 +1,5 @@
-attention_dropout: 0.2 #0.15
-batch_size: 128 #64 #256
+attention_dropout: 0.15 #0.15
+batch_size: 64 #64 #256
 betas:
 - 0.9
 - 0.999
@@ -7,7 +7,7 @@ checkpoints_path: "./checkpoints/block-push/PDT-oracle"
 clip_grad: 0.25
 deterministic_torch: false
 device: cuda
-embedding_dim: 64
+embedding_dim: 128
 embedding_dropout: 0.05 #0.1
 env_name: "BlockPushMultimodal-v0"
 state_dim: 16
@@ -25,7 +25,7 @@ num_workers: 4
 project: "CORL"
 residual_dropout: 0.15 #0.1
 reward_scale: 1.0
-seq_len: 20
+seq_len: 2
 target_returns: [0.0]
 train_seed: 16 #10
 update_steps: 150000
@@ -34,23 +34,23 @@ weight_decay: 0.0001
 log_attn_weights: 1
 log_attn_every: 250
 record_video: 1
-run_name: "run17"
+run_name: "run33"
 eval_offline_every: 5000
 bg_image: ""
 eval_path_plot_every: 2500
-num_plan_points: 20
+num_plan_points: 10
 plan_bar_visualisation: false
 replanning_interval: 10 #80
 num_eval_videos: 1
 action_noise_scale: 0.0 # 0.4
-plan_max_trajectory_ratio: 0.25 # 0.5
-#plan_indices: [8,9]
+plan_max_trajectory_ratio: 0.5 # 0.5
+plan_indices: [0,1,2,3,4,5,8,9]
 state_noise_scale: 0.0 # 0.0
 plan_disabled: false
 use_two_phase_training: false # false
 is_goal_conditioned: false # true
 path_viz_indices: [8,9]
-plans_use_actions: true
+plans_use_actions: false
 non_plan_downweighting: 0 #-2
 use_timestep_embedding: True
 plan_combine_observations: False
