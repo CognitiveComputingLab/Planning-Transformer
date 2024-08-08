@@ -44,7 +44,6 @@ replanning_interval: 5 #80
 num_eval_videos: 1 # Video rendering can be slow for kitchen env
 action_noise_scale: 0.0 # 0.4
 plan_max_trajectory_ratio: 1.0 # 0.5
-state_noise_scale: 0.0 # 0.0
 plan_disabled: False
 use_two_phase_training: false # false
 is_goal_conditioned: false # true

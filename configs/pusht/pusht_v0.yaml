@@ -46,7 +46,6 @@ num_eval_videos: 1
 action_noise_scale: 0.0 # 0.4
 plan_max_trajectory_ratio: 0.25 # 0.5
 #plan_indices: [0,1]
-state_noise_scale: 0.0 # 0.0
 plan_disabled: False
 use_two_phase_training: false # false
 is_goal_conditioned: false # true

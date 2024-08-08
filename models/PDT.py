@@ -126,6 +126,7 @@ class TrainConfig:
         int] = 3  # 1: Absolute Goal, 2: Relative goal, 3: State project to Goal and Absolute Goal
     plan_combine_observations: Optional[bool] = False  # Split observations into multiple tokens or combine
     plan_disabled: Optional[bool] = False  # turn off the plan
+    use_timestep_embedding: Optional[bool] = True # Whether to use the timestep embedding within the environment
 
     # ablation testing parameters other
     plan_max_trajectory_ratio: Optional[float] = 0.5
@@ -133,7 +134,6 @@ class TrainConfig:
     use_two_phase_training: Optional[bool] = False
     is_goal_conditioned: Optional[bool] = False
     goal_indices: Optional[Tuple[int, ...]] = (0, 1)
-    use_timestep_embedding: Optional[bool] = True
 
     # other
     checkpoint_to_load: Optional[str] = None
@@ -357,6 +357,7 @@ class SequencePlanDataset(SequenceDataset):
 
         states_till_end = normalize_state(states_till_end, self.state_mean, self.state_std)
         plan_states = normalize_state(plan_states, self.state_mean, self.state_std)
+
         if self.is_gc:
             # select random observation in future
             # since the plan already implements this logic we just select the last plan state

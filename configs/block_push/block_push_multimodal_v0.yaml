@@ -1,5 +1,5 @@
-attention_dropout: 0.15 #0.15
-batch_size: 512 #64 #256
+attention_dropout: 0.2 #0.15
+batch_size: 384 #64 #256
 betas:
 - 0.9
 - 0.999
@@ -34,7 +34,7 @@ weight_decay: 0.0001
 log_attn_weights: 1
 log_attn_every: 250
 record_video: 1
-run_name: "run97"
+run_name: "run98"
 eval_offline_every: 5000
 bg_image: ""
 eval_path_plot_every: 2500
