@@ -153,6 +153,8 @@ def prepare_plot(image_path, pos_mean, pos_std):
     # Create figure and axes
     fig, ax = plt.subplots()
 
+    image_path = "" if image_path is None else image_path
+
     # Determine the extent of the image based on its path
     if 'antmaze' in image_path:
         if 'large' in image_path:
@@ -169,7 +171,7 @@ def prepare_plot(image_path, pos_mean, pos_std):
         tl, br = normalise_coords([[-0.5, -0.5], [-0.5, 0.5]], pos_mean, pos_std)
 
     # Load the background image
-    if not image_path in [None,""]:
+    if image_path != "":
         bg_image = plt.imread('./visualisations/bg_images/'+image_path)
         ax.imshow(bg_image, extent=(tl[0], br[0], tl[1], br[1]))
 
@@ -177,7 +179,8 @@ def prepare_plot(image_path, pos_mean, pos_std):
 
 
 def plot_and_log_paths(image_path, start, goal, plan_paths, ant_path, output_folder, index, pos_mean, pos_std,
-                       log_to_wandb=True, save_data=True, orientation_path=None, last_plan_only=False):
+                       log_to_wandb=True, save_data=True, orientation_path=None, last_plan_only=False,
+                       remove_axis= True):
     if output_folder is not None:
         # if the output folder doesn't exist make it
         os.makedirs(output_folder, exist_ok=True)
@@ -216,8 +219,9 @@ def plot_and_log_paths(image_path, start, goal, plan_paths, ant_path, output_fol
         if has_fallen:
             ax.scatter(ant_path[-1][0], ant_path[-1][1], s=100, c='yellow', marker='x', zorder=5)  # mark that it fell
 
-    # Remove axes for better visualization
-    ax.axis('off')
+    if remove_axis:
+        # Remove axes for better visualization
+        ax.axis('off')
 
     if output_folder is not None:
         # Save the image

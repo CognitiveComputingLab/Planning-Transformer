@@ -129,7 +129,7 @@ class TrainConfig:
 
     # ablation testing parameters other
     plan_max_trajectory_ratio: Optional[float] = 0.5
-    state_noise_scale: Optional[float] = 0.0
+    state_eval_noise_scale: Optional[float] = 0.0
     use_two_phase_training: Optional[bool] = False
     is_goal_conditioned: Optional[bool] = False
     goal_indices: Optional[Tuple[int, ...]] = (0, 1)
@@ -354,6 +354,7 @@ class SequencePlanDataset(SequenceDataset):
         time_steps = np.arange(start_idx, start_idx + self.seq_len)
 
         states = normalize_state(states, self.state_mean, self.state_std)
+
         states_till_end = normalize_state(states_till_end, self.state_mean, self.state_std)
         plan_states = normalize_state(plan_states, self.state_mean, self.state_std)
         if self.is_gc:
@@ -624,7 +625,7 @@ def eval_rollout(
         record_video: bool = False,
         early_stop_step: int = inf,
         action_noise_scale: float = 0.7,
-        state_noise_scale: float = 0.0,
+        state_eval_noise_scale: float = 0.0,
         num_eps_with_logged_attention: int = 3,
         is_goal_conditioned: bool = False,
         disable_return_targets: bool = False
@@ -994,6 +995,8 @@ def train(config: TrainConfig):
             plan_loss = (plan_loss * return_weight).mean()
             action_loss = F.mse_loss(predicted_actions, actions.detach(), reduction="none")
             action_loss = (action_loss * mask.unsqueeze(-1) * return_weight).mean()
+
+            # Make sure action space and plan space are both in the range -1,1 thorugh normalization or this won't work!
             combined_loss = 0.5 * action_loss + 0.5 * plan_loss if dataset.plan_length else action_loss
             # t = step / config.update_steps
             # combined_loss = t * action_loss + (1 - t) * plan_loss if dataset.plan_length else action_loss
@@ -1095,9 +1098,9 @@ def train(config: TrainConfig):
                         replanning_interval=config.replanning_interval,
                         early_stop_step=config.eval_early_stop_step,
                         action_noise_scale=config.action_noise_scale,
-                        state_noise_scale=config.state_noise_scale,
+                        state_eval_noise_scale=config.state_eval_noise_scale,
                         disable_return_targets=config.disable_return_targets,
-                        num_eps_with_logged_attention=config.num_eps_with_logged_attention
+                        num_eps_with_logged_attention=config.num_eps_with_logged_attention * (step % config.eval_every == 0)
                     )
                     # use max_reward IoU
                     if 'pusht' in config.env_name:

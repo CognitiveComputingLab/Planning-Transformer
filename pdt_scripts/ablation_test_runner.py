@@ -7,22 +7,23 @@ import sys
 
 # Define the parameters and their possible values
 parameters = {
-    "plan_sampling_method": [2, 1],
-    # "plan_use_relative_states": [True, False],
-    "attention_dropout": [0.1, 0.15, 0.2, 0.25],
-    "embedding_dropout": [0.05,0],
-    # "plans_use_actions": [False, True],
-    # "goal_representation": [1, 3, 4],
-    # "plan_combine_observations": [True, False],
-    "use_timestep_embedding": [True, False],
-    "plan_max_trajectory_ratio": [0.5, 1.0],
-    # "action_noise_scale": [0.0, 0.1, 0.2],
-    "plan_indices": [[0,1]],
-    "embedding_dim": [128,256,512],
-    "num_plan_points": [10,20],
-    "learning_rate": [0.0002, 0.0004],
-    "residual_dropout": [0.05, 0.1, 0.15, 0.2] #0.1
+    # "batch_size": [512,256],
+    # "plan_sampling_method": [2, 1],
+    # # "plan_use_relative_states": [True, False],
+    # "attention_dropout": [0.1, 0.15, 0.2],
+    # # "embedding_dropout": [0.05,0],
+    # # "plans_use_actions": [False, True],
+    # # "goal_representation": [1, 3, 4],
+    # # "plan_combine_observations": [True, False],
+    # # "use_timestep_embedding": [True, False],
+    # "plan_max_trajectory_ratio": [0.5, 1.0],
+    # # "action_noise_scale": [0.0, 0.1, 0.2],
+    # # "plan_indices": [[0,1]],
+    # "embedding_dim": [64,72],
+    # "num_plan_points": [10,20],
+    # "learning_rate": [0.0016],
     # "plan_use_relative_states": [False, True],
+    "seq_len": [10,15,20],
 }
 
 config_files = [
@@ -31,7 +32,8 @@ config_files = [
     # "configs/antmaze/large_diverse_v2.yaml",
     # "configs/gym_mujoco/halfcheetah_medium_replay_v2.yaml"
     # "configs/antmaze/ultra_diverse_v0.yaml",
-    "configs/pusht/pusht_v0.yaml",
+    # "configs/pusht/pusht_v0.yaml",
+    "configs/block_push/block_push_multimodal_v0.yaml",
 ]
 
 def find_project_root() -> str:
@@ -69,7 +71,7 @@ def modify_and_run(config: Dict[str, Any], param: str, value: Any, idx: int, pro
     os.remove(temp_config_path)
 
 def run_ablation_tests(config_files: List[str], parameters: Dict[str, List[Any]], project_root: str):
-    has_run_default = False
+    has_run_default = True # set to False to run a default params test first
     for config_file in config_files:
         idx = 0
         full_config_path = os.path.join(project_root, config_file)

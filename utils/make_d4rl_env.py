@@ -176,6 +176,8 @@ class BlockPushD4RLWrapper(BaseD4RLWrapper):
         self.ref_max_score = ref_max_score
         self.ref_min_score = ref_min_score
 
+        self.action_scale = 0.03 # 0.03 # 1.0
+
     def get_dataset(self):
         if self.zarr_path is None:
             raise ValueError("Offline env not configured with a repository ID.")
@@ -183,14 +185,18 @@ class BlockPushD4RLWrapper(BaseD4RLWrapper):
         zarr_path = self.zarr_path
         data = zarr.open(zarr_path, mode='r')
 
-        episode_ends = set(data['meta/episode_ends'])
+        episode_ends = set(np.array(data['meta/episode_ends'])-1) # why is this 1 indexed, not 0 indexed. FML
 
         data_dict = {
             'observations': np.array(data['data/obs']),
-            'actions': np.array(data['data/action']),
+            'actions': np.array(data['data/action'])/self.action_scale, # normalize actions
             'rewards': np.zeros(len(data['data/obs']), dtype=np.float32),
             'terminals': np.array([i in episode_ends for i in range(len(data['data/obs']))], dtype=np.bool_),
             'timeouts': np.zeros(len(data['data/obs']), dtype=np.bool_)
         }
 
         return self._check_dataset(data_dict)
+
+    def step(self, action):
+        observation, reward, done, info = self.env.step(action*self.action_scale) # unnormalize actions
+        return observation, reward, done, info
