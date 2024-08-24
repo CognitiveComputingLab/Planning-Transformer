@@ -176,7 +176,7 @@ class BlockPushD4RLWrapper(BaseD4RLWrapper):
         self.ref_max_score = ref_max_score
         self.ref_min_score = ref_min_score
 
-        self.action_scale = 0.03 # 0.03 # 1.0
+        self.action_scale = 0.03 #0.03 # 0.05 # 1.0
 
     def get_dataset(self):
         if self.zarr_path is None:

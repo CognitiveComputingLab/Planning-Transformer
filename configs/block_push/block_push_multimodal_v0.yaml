@@ -1,5 +1,5 @@
 attention_dropout: 0.2 #0.15
-batch_size: 384 #64 #256
+batch_size: 512 #64 #256
 betas:
 - 0.9
 - 0.999
@@ -25,16 +25,16 @@ num_workers: 4
 project: "CORL"
 residual_dropout: 0.15 #0.1
 reward_scale: 1.0
-seq_len: 20
+seq_len: 10
 target_returns: [0.0]
 train_seed: 16 #10
-update_steps: 120000 #150000
+update_steps: 1000000 #150000
 warmup_steps: 10000
 weight_decay: 0.0001
 log_attn_weights: 1
 log_attn_every: 250
 record_video: 1
-run_name: "run98"
+run_name: "run148"
 eval_offline_every: 5000
 bg_image: ""
 eval_path_plot_every: 2500
@@ -58,4 +58,23 @@ plan_use_relative_states: False
 goal_representation: 3 # 1: Absolute Goal, 2: Relative goal, 3: State project to Goal and Absolute Goal
 disable_return_targets: True
 num_eps_with_logged_attention: 0
+plan_action_update_ratio: 0.01 #0.05
 
+
+#checkpoint_to_load: PDT-oracle-BlockPushMultimodal-v0-1e5b1851 # run 96
+#checkpoint_step_to_load: 700000
+
+#checkpoint_to_load: PDT-oracle-BlockPushMultimodal-v0-8aed9909 # A7 - Emb Dim 72
+#checkpoint_step_to_load: 119999
+
+#checkpoint_to_load: PDT-oracle-BlockPushMultimodal-v0-8bab66d5 # A6 - Emb Dim 64
+#checkpoint_step_to_load: 119999
+
+#checkpoint_to_load: PDT-oracle-BlockPushMultimodal-v0-f2d44b52 # A2 - Plan Sampling 1
+#checkpoint_step_to_load: 119999
+
+#checkpoint_to_load: PDT-oracle-BlockPushMultimodal-v0-f268e231 # 2L - MAGA
+#checkpoint_step_to_load: 115000
+
+#checkpoint_to_load: PDT-oracle-BlockPushMultimodal-v0-6a2bd1c2 # 1/100 ratio
+#checkpoint_step_to_load: 70000

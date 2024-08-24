@@ -134,6 +134,7 @@ class TrainConfig:
     use_two_phase_training: Optional[bool] = False
     is_goal_conditioned: Optional[bool] = False
     goal_indices: Optional[Tuple[int, ...]] = (0, 1)
+    plan_action_update_ratio: Optional[float] = 1
 
     # other
     checkpoint_to_load: Optional[str] = None
@@ -998,7 +999,8 @@ def train(config: TrainConfig):
             action_loss = (action_loss * mask.unsqueeze(-1) * return_weight).mean()
 
             # Make sure action space and plan space are both in the range -1,1 thorugh normalization or this won't work!
-            combined_loss = 0.5 * action_loss + 0.5 * plan_loss if dataset.plan_length else action_loss
+            plan_weight = config.plan_action_update_ratio / (config.plan_action_update_ratio + 1)
+            combined_loss = (1-plan_weight) * action_loss + plan_weight * plan_loss if dataset.plan_length else action_loss
             # t = step / config.update_steps
             # combined_loss = t * action_loss + (1 - t) * plan_loss if dataset.plan_length else action_loss
             # if step/config.update_steps <0.1:

@@ -27,12 +27,12 @@ reward_scale: 1.0
 seq_len: 10
 target_returns: [1.5]
 train_seed: 16 #10
-update_steps: 100000
+update_steps: 150000
 warmup_steps: 10000
 weight_decay: 0.0001
 log_attn_weights: 1
 log_attn_every: 250
-record_video: 1
+record_video: 0
 run_name: "run_14"
 eval_offline_every: 5000
 bg_image: "antmaze_large_bg.png"
@@ -42,7 +42,7 @@ plan_bar_visualisation: false
 replanning_interval: 10 #80
 num_eval_videos: 1
 action_noise_scale: 0.4 # 0.4
-plan_sampling_method: 4 # 1: fixed-time", 2: fixed-distance", 3: log-time", 4: log-distance
+plan_sampling_method: 2 # 1: fixed-time", 2: fixed-distance", 3: log-time", 4: log-distance
 plan_max_trajectory_ratio: 0.5 # 0.5
 plan_combine_observations: False
 plan_disabled: False

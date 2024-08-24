@@ -7,7 +7,7 @@ checkpoints_path: "./checkpoints/walker2s_medium_expert_v2/PDT-oracle"
 clip_grad: 0.25
 deterministic_torch: false
 device: cuda
-embedding_dim: 128 #128
+embedding_dim: 96 #128
 embedding_dropout: 0.1 #0.1
 env_name: "walker2d-medium-expert-v2"
 episode_len: 1000
@@ -33,7 +33,7 @@ weight_decay: 0.0001
 log_attn_weights: 1
 log_attn_every: 250
 record_video: 1
-run_name: "run_1"
+run_name: "run_6"
 eval_offline_every: 5000
 bg_image: "antmaze_medium_bg.png"
 eval_path_plot_every: 2500

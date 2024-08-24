@@ -25,24 +25,24 @@ project: "CORL"
 residual_dropout: 0.15 #0.1
 reward_scale: 0.001
 seq_len: 20 #10
-target_returns: [12000]
+target_returns: [14000]
 train_seed: 16 #10
 update_steps: 100000
 warmup_steps: 10000
 weight_decay: 0.0001
 log_attn_weights: 1
 log_attn_every: 250
-record_video: 1
-run_name: "run_7"
+record_video: 0
+run_name: "run_8"
 eval_offline_every: 5000
 bg_image: "antmaze_medium_bg.png"
 eval_path_plot_every: 2500
 num_plan_points: 10
 plan_bar_visualisation: false
 replanning_interval: 10 #80
-num_eval_videos: 1
+num_eval_videos: 0
 action_noise_scale: 0.0 # 0.7
-plan_sampling_method: 2 # 1: fixed-time", 2: fixed-distance", 3: log-time", 4: log-distance
+plan_sampling_method: 4 # 1: fixed-time", 2: fixed-distance", 3: log-time", 4: log-distance
 plan_max_trajectory_ratio: 0.5 # 0.5
 plan_combine_observations: False
 plan_disabled: False

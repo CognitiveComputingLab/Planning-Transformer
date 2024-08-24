@@ -10,7 +10,7 @@ device: cuda
 embedding_dim: 192
 embedding_dropout: 0.1 #0.1
 env_name: "kitchen-partial-v0"
-episode_len: 280
+episode_len: 1000
 eval_episodes: 50 #15
 eval_every: 5000
 eval_seed: 43 #42 or -1 to seed every run the same
